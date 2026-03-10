@@ -325,6 +325,10 @@ function isPendingSandboxId(sandboxId: string): boolean {
   return sandboxId.startsWith(RUNTIME_SANDBOX_PENDING_PREFIX)
 }
 
+function canResumePersistedSession(runtimeState: agentRuntimeStore.AgentRuntimeState, sandboxId: string): boolean {
+  return runtimeState.hasSession && !isPendingSandboxId(runtimeState.sandboxId) && runtimeState.sandboxId === sandboxId
+}
+
 function isSandboxNotFoundError(err: unknown): boolean {
   const message = String((err as any)?.message || err || '').toLowerCase()
   return (
@@ -1257,13 +1261,19 @@ export async function startAgent(agentId: string): Promise<void> {
     })
 
     sandboxId = await box.getId()
-    if (sandboxId !== runtimeState.sandboxId || isPendingSandboxId(runtimeState.sandboxId)) {
+    const canResumeInitialSession = canResumePersistedSession(runtimeState, sandboxId)
+    if (
+      sandboxId !== runtimeState.sandboxId
+      || isPendingSandboxId(runtimeState.sandboxId)
+      || runtimeState.hasSession !== canResumeInitialSession
+    ) {
       runtimeState = agentRuntimeStore.upsertAgentRuntimeState({
         agentId,
         sandboxName,
         sandboxId,
         guiHttpPort,
         guiHttpsPort,
+        hasSession: canResumeInitialSession,
         lastStartedAt: runtimeState.lastStartedAt,
         lastStoppedAt: runtimeState.lastStoppedAt,
       })
@@ -1287,13 +1297,19 @@ export async function startAgent(agentId: string): Promise<void> {
     emitStartupLog(agentId, `Desktop ready after ${desktopReady.probeCount} probes (${desktopReady.matchedMarker})`)
     console.log(`Desktop ready (agent ${agentId})`)
     sandboxId = await box.getId()
-    if (sandboxId !== runtimeState.sandboxId || isPendingSandboxId(runtimeState.sandboxId)) {
+    const canResumeDesktopSession = canResumePersistedSession(runtimeState, sandboxId)
+    if (
+      sandboxId !== runtimeState.sandboxId
+      || isPendingSandboxId(runtimeState.sandboxId)
+      || runtimeState.hasSession !== canResumeDesktopSession
+    ) {
       runtimeState = agentRuntimeStore.upsertAgentRuntimeState({
         agentId,
         sandboxName,
         sandboxId,
         guiHttpPort,
         guiHttpsPort,
+        hasSession: canResumeDesktopSession,
         lastStartedAt: runtimeState.lastStartedAt,
         lastStoppedAt: runtimeState.lastStoppedAt,
       })
@@ -1382,6 +1398,7 @@ export async function startAgent(agentId: string): Promise<void> {
       sandboxId,
       guiHttpPort,
       guiHttpsPort,
+      hasSession: runtimeState.hasSession,
       lastStartedAt: runtimeState.lastStartedAt,
       lastStoppedAt: runtimeState.lastStoppedAt,
     })
@@ -1401,7 +1418,7 @@ export async function startAgent(agentId: string): Promise<void> {
       guiHttpsPort,
       backendUrl,
       cliInstalled: true,
-      hasSession: false,
+      hasSession: runtimeState.hasSession,
       startedAt,
       thinkingSince: 0,
     })
@@ -1808,6 +1825,7 @@ async function _sendMessageInner(
     }
 
     running.hasSession = true
+    agentRuntimeStore.setAgentRuntimeHasSession(agentId, true)
     running.thinkingSince = 0
     setAgentStatus(agentId, 'idle', { source: 'send-message' })
 
@@ -2130,6 +2148,7 @@ export async function resetStoppedAgentRuntimeSandbox(agentId: string): Promise<
     sandboxId: getPendingSandboxId(agentId),
     guiHttpPort: runtimeState.guiHttpPort,
     guiHttpsPort: runtimeState.guiHttpsPort,
+    hasSession: false,
     lastStartedAt: runtimeState.lastStartedAt,
     lastStoppedAt: runtimeState.lastStoppedAt,
   })

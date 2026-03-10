@@ -46,6 +46,7 @@ test('runtime state persists sandbox identity and ports across stop/start and re
   })
   assert.equal(created.guiHttpPort, 41001)
   assert.equal(created.guiHttpsPort, 41002)
+  assert.equal(created.hasSession, false)
 
   const firstSandboxId = `box-${agent.id}-stable`
   runtimeStore.upsertAgentRuntimeState({
@@ -54,6 +55,7 @@ test('runtime state persists sandbox identity and ports across stop/start and re
     sandboxId: firstSandboxId,
     guiHttpPort: created.guiHttpPort,
     guiHttpsPort: created.guiHttpsPort,
+    hasSession: true,
   })
 
   const stoppedAt = Date.now()
@@ -77,8 +79,47 @@ test('runtime state persists sandbox identity and ports across stop/start and re
   assert.equal(finalState?.sandboxId, firstSandboxId)
   assert.equal(finalState?.guiHttpPort, 41001)
   assert.equal(finalState?.guiHttpsPort, 41002)
+  assert.equal(finalState?.hasSession, true)
   assert.equal(finalState?.lastStoppedAt, stoppedAt)
   assert.equal(finalState?.lastStartedAt, startedAt)
+})
+
+test('resetting a stopped runtime clears persisted session resume state', async () => {
+  clearTables()
+
+  const agent = agentStore.createAgent({
+    name: 'Reset Session Agent',
+    personality: 'Resets resume state',
+  })
+
+  const sandboxId = `box-${agent.id}-reset`
+  runtimeStore.upsertAgentRuntimeState({
+    agentId: agent.id,
+    sandboxName: `agent-runtime-${agent.id}`,
+    sandboxId,
+    guiHttpPort: 41101,
+    guiHttpsPort: 41102,
+    hasSession: true,
+  })
+
+  const removed: string[] = []
+  try {
+    agentManager.__setRuntimeForTests({
+      remove: async (id: string) => {
+        removed.push(id)
+      },
+    })
+
+    await agentManager.resetStoppedAgentRuntimeSandbox(agent.id)
+  } finally {
+    agentManager.__setRuntimeForTests(null)
+  }
+
+  assert.deepEqual(removed, [sandboxId])
+  const persisted = runtimeStore.getAgentRuntimeState(agent.id)
+  assert.ok(persisted)
+  assert.equal(persisted?.sandboxId, `pending:${agent.id}`)
+  assert.equal(persisted?.hasSession, false)
 })
 
 test('running sandbox overlay prefers persisted sandbox id', async () => {
