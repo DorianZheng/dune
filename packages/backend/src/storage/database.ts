@@ -117,6 +117,7 @@ function initSchema(db: Database.Database) {
       sandbox_id TEXT NOT NULL,
       gui_http_port INTEGER NOT NULL,
       gui_https_port INTEGER NOT NULL,
+      has_session INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
       last_started_at INTEGER,
@@ -358,6 +359,12 @@ function initSchema(db: Database.Database) {
 
   try {
     db.exec(`ALTER TABLE claude_settings ADD COLUMN selected_model_provider TEXT`)
+  } catch {
+    // Column already exists — ignore
+  }
+
+  try {
+    db.exec(`ALTER TABLE agent_runtime_state ADD COLUMN has_session INTEGER NOT NULL DEFAULT 0`)
   } catch {
     // Column already exists — ignore
   }

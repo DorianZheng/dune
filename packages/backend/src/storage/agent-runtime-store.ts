@@ -6,6 +6,7 @@ export type AgentRuntimeState = {
   sandboxId: string
   guiHttpPort: number
   guiHttpsPort: number
+  hasSession: boolean
   createdAt: number
   updatedAt: number
   lastStartedAt: number | null
@@ -18,6 +19,7 @@ type UpsertAgentRuntimeStateInput = {
   sandboxId: string
   guiHttpPort: number
   guiHttpsPort: number
+  hasSession?: boolean | null
   now?: number
   lastStartedAt?: number | null
   lastStoppedAt?: number | null
@@ -30,6 +32,7 @@ function mapRow(row: any): AgentRuntimeState {
     sandboxId: row.sandboxId,
     guiHttpPort: Number(row.guiHttpPort),
     guiHttpsPort: Number(row.guiHttpsPort),
+    hasSession: Number(row.hasSession || 0) === 1,
     createdAt: Number(row.createdAt),
     updatedAt: Number(row.updatedAt),
     lastStartedAt: row.lastStartedAt == null ? null : Number(row.lastStartedAt),
@@ -45,6 +48,7 @@ export function getAgentRuntimeState(agentId: string): AgentRuntimeState | null 
       sandbox_id as sandboxId,
       gui_http_port as guiHttpPort,
       gui_https_port as guiHttpsPort,
+      has_session as hasSession,
       created_at as createdAt,
       updated_at as updatedAt,
       last_started_at as lastStartedAt,
@@ -64,6 +68,7 @@ export function listAgentRuntimeStates(limit = 500): AgentRuntimeState[] {
       sandbox_id as sandboxId,
       gui_http_port as guiHttpPort,
       gui_https_port as guiHttpsPort,
+      has_session as hasSession,
       created_at as createdAt,
       updated_at as updatedAt,
       last_started_at as lastStartedAt,
@@ -86,16 +91,22 @@ export function upsertAgentRuntimeState(input: UpsertAgentRuntimeStateInput): Ag
       sandbox_id,
       gui_http_port,
       gui_https_port,
+      has_session,
       created_at,
       updated_at,
       last_started_at,
       last_stopped_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, COALESCE(?, (
+      SELECT has_session
+      FROM agent_runtime_state
+      WHERE agent_id = ?
+    ), 0), ?, ?, ?, ?)
     ON CONFLICT(agent_id) DO UPDATE SET
       sandbox_name = excluded.sandbox_name,
       sandbox_id = excluded.sandbox_id,
       gui_http_port = excluded.gui_http_port,
       gui_https_port = excluded.gui_https_port,
+      has_session = excluded.has_session,
       updated_at = excluded.updated_at,
       last_started_at = COALESCE(excluded.last_started_at, agent_runtime_state.last_started_at),
       last_stopped_at = COALESCE(excluded.last_stopped_at, agent_runtime_state.last_stopped_at)`
@@ -105,6 +116,8 @@ export function upsertAgentRuntimeState(input: UpsertAgentRuntimeStateInput): Ag
     input.sandboxId,
     input.guiHttpPort,
     input.guiHttpsPort,
+    input.hasSession == null ? null : Number(input.hasSession),
+    input.agentId,
     now,
     now,
     input.lastStartedAt ?? null,
@@ -132,6 +145,14 @@ export function touchAgentRuntimeStopped(agentId: string, ts: number): void {
     SET last_stopped_at = ?, updated_at = ?
     WHERE agent_id = ?`
   ).run(ts, ts, agentId)
+}
+
+export function setAgentRuntimeHasSession(agentId: string, hasSession: boolean, ts = Date.now()): void {
+  getDb().prepare(
+    `UPDATE agent_runtime_state
+    SET has_session = ?, updated_at = ?
+    WHERE agent_id = ?`
+  ).run(Number(hasSession), ts, agentId)
 }
 
 export function deleteAgentRuntimeState(agentId: string): void {
