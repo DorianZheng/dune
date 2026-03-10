@@ -209,6 +209,10 @@ export class AgentLogViewer extends LitElement {
         return { level: 'SYSTEM', tone: 'muted', text: data.message ?? '' }
       case 'user_message':
         return { level: 'USER', tone: 'info', text: data.content ?? '' }
+      case 'mailbox_notice': {
+        const unreadCount = typeof data.unreadCount === 'number' ? data.unreadCount : 0
+        return { level: 'MAILBOX', tone: 'warn', text: `${unreadCount} unread` }
+      }
       case 'channel_input': {
         const channels = Array.isArray(data.channels) ? data.channels.length : 0
         return { level: 'CHANNEL', tone: 'muted', text: `${channels} channel(s)` }

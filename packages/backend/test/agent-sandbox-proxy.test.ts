@@ -87,6 +87,39 @@ test('dune proxy forwards sandbox APIs with system actor headers and keeps exist
       return
     }
 
+    if (req.method === 'GET' && path === '/api/agents/agent-proxy-test/mailbox') {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({
+        unreadCount: 2,
+        activeLease: null,
+      }))
+      return
+    }
+
+    if (req.method === 'POST' && path === '/api/agents/agent-proxy-test/mailbox/fetch') {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({
+        batchId: 'batch-1',
+        unreadCount: 2,
+        expiresAt: Date.now() + 60_000,
+        channels: [
+          {
+            channelId: 'chan-1',
+            channelName: 'general',
+            messages: [{ id: 'msg-1', channelId: 'chan-1', authorId: 'admin', content: 'hello', timestamp: 1, mentionedAgentIds: [] }],
+          },
+        ],
+      }))
+      return
+    }
+
+    if (req.method === 'POST' && path === '/api/agents/agent-proxy-test/mailbox/ack') {
+      const payload = JSON.parse(body.toString('utf-8') || '{}')
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ ok: Boolean(payload.batchId) }))
+      return
+    }
+
     if (req.method === 'POST' && path === '/api/agents/agent-proxy-test/host-commands') {
       const payload = JSON.parse(body.toString('utf-8') || '{}')
       if (payload.command === 'sleep-proxy') {
@@ -243,6 +276,27 @@ test('dune proxy forwards sandbox APIs with system actor headers and keeps exist
     const agentsViaCompat = await agentsCompatRes.json() as Array<{ id: string }>
     assert.equal(agentsViaCompat[0]?.id, 'agent-proxy-test')
 
+    const mailboxRes = await fetchStep('mailbox', `http://127.0.0.1:${proxyPort}/mailbox`)
+    assert.equal(mailboxRes.status, 200)
+    const mailboxBody = await mailboxRes.json() as { unreadCount: number }
+    assert.equal(mailboxBody.unreadCount, 2)
+
+    const mailboxFetchRes = await fetchStep('mailbox-fetch', `http://127.0.0.1:${proxyPort}/mailbox/fetch`, {
+      method: 'POST',
+    })
+    assert.equal(mailboxFetchRes.status, 200)
+    const mailboxFetchBody = await mailboxFetchRes.json() as { batchId: string }
+    assert.equal(mailboxFetchBody.batchId, 'batch-1')
+
+    const mailboxAckRes = await fetchStep('mailbox-ack', `http://127.0.0.1:${proxyPort}/mailbox/ack`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ batchId: 'batch-1' }),
+    })
+    assert.equal(mailboxAckRes.status, 200)
+    const mailboxAckBody = await mailboxAckRes.json() as { ok: boolean }
+    assert.equal(mailboxAckBody.ok, true)
+
     const sendRes = await fetchStep('send', `http://127.0.0.1:${proxyPort}/send`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -294,6 +348,9 @@ test('dune proxy forwards sandbox APIs with system actor headers and keeps exist
 
     const longHostResponse = await longHostRequest
     assert.equal(longHostResponse.status, 200)
+
+    const historyRes = await fetchStep('messages-with-before', `http://127.0.0.1:${proxyPort}/messages?channel=general&limit=2&before=123`)
+    assert.equal(historyRes.status, 200)
 
     const boxesRes = await fetchStep('boxes-list', `http://127.0.0.1:${proxyPort}/sandboxes/v1/boxes?limit=5`, {
       headers: { Accept: 'application/json' },
@@ -363,6 +420,19 @@ test('dune proxy forwards sandbox APIs with system actor headers and keeps exist
 
     const agentsReq = findCaptured(captured, 'GET', '/api/agents')
     assert.ok(agentsReq)
+
+    const mailboxReq = findCaptured(captured, 'GET', '/api/agents/agent-proxy-test/mailbox')
+    assert.ok(mailboxReq)
+
+    const mailboxFetchReq = findCaptured(captured, 'POST', '/api/agents/agent-proxy-test/mailbox/fetch')
+    assert.ok(mailboxFetchReq)
+
+    const mailboxAckReq = findCaptured(captured, 'POST', '/api/agents/agent-proxy-test/mailbox/ack')
+    assert.ok(mailboxAckReq)
+    assert.deepEqual(JSON.parse(mailboxAckReq?.body.toString('utf-8') || '{}'), { batchId: 'batch-1' })
+
+    const historyReq = findCaptured(captured, 'GET', '/api/channels/chan-1/messages?limit=2&before=123')
+    assert.ok(historyReq)
   } finally {
     proxy.kill('SIGTERM')
     await Promise.race([

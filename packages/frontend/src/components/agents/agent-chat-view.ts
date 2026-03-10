@@ -559,6 +559,47 @@ export class AgentChatView extends LitElement {
       word-break: break-word;
     }
 
+    /* ── Mailbox notices ── */
+    .entry-mailbox {
+      padding: 5px 12px 5px 48px;
+    }
+    .mailbox-card {
+      max-width: 720px;
+      border-radius: 10px;
+      background: color-mix(in srgb, var(--warning) 12%, var(--bg-surface));
+      color: var(--text-primary);
+      padding: 10px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .mailbox-copy {
+      min-width: 0;
+      flex: 1;
+    }
+    .mailbox-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+    .mailbox-meta {
+      font-size: 12px;
+      color: var(--text-secondary);
+      margin-top: 2px;
+    }
+    .mailbox-count {
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--warning) 18%, var(--bg-hover));
+      color: var(--text-primary);
+      font-size: 12px;
+      font-weight: 700;
+      padding: 6px 10px;
+      white-space: nowrap;
+      font-family: var(--font-mono);
+    }
+
     /* ── Channel input (inbox card) ── */
     .entry-channel-input {
       padding: 4px 12px;
@@ -2171,6 +2212,22 @@ export class AgentChatView extends LitElement {
                 <span class="entry-user-time">${time}</span>
               </div>
               <div class="entry-user-content">${d.content || ''}</div>
+            </div>
+          </div>
+        `
+      }
+
+      case 'mailbox_notice': {
+        const unreadCount = Number(d.unreadCount || 0)
+        const label = unreadCount === 1 ? 'message' : 'messages'
+        return html`
+          <div class="entry-mailbox">
+            <div class="mailbox-card">
+              <div class="mailbox-copy">
+                <div class="mailbox-title">Mailbox notice</div>
+                <div class="mailbox-meta">Fetch unread mail from the proxy, then acknowledge the batch when finished.</div>
+              </div>
+              <div class="mailbox-count">${unreadCount} unread ${label}</div>
             </div>
           </div>
         `
