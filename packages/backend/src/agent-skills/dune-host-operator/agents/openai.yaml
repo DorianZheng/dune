@@ -1,0 +1,3 @@
+agents:
+  codex:
+    short_description: "Request host command execution with agent-configured approval policy"

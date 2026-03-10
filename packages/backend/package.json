@@ -1,0 +1,30 @@
+{
+  "name": "@dune/backend",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "rm -rf dist && tsc",
+    "dev": "tsx --env-file=../../.env --watch src/index.ts",
+    "test": "node --test --import tsx ./test/**/*.test.ts"
+  },
+  "dependencies": {
+    "@dune/shared": "workspace:*",
+    "@boxlite-ai/boxlite": "^0.2.9",
+    "@hono/node-server": "^1.13.0",
+    "@sinclair/typebox": "^0.34.0",
+    "better-sqlite3": "^11.0.0",
+    "hono": "^4.6.0",
+    "mime-types": "^3.0.2",
+    "nanoid": "^5.1.6",
+    "uuid": "^11.0.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.0",
+    "@types/mime-types": "^2.1.4",
+    "@types/uuid": "^10.0.0",
+    "@types/ws": "^8.5.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

@@ -1,0 +1,287 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+:root {
+  color-scheme: light dark;
+
+  --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', 'SFMono-Regular', 'Consolas', monospace;
+
+  --text-meta-size: 12px;
+  --text-secondary-size: 13px;
+  --text-body-size: 14px;
+  --text-title-size: 16px;
+  --text-display-size: 22px;
+
+  --radius-xs: 6px;
+  --radius-sm: 8px;
+  --radius: 10px;
+  --radius-lg: 12px;
+
+  --space-2xs: 4px;
+  --space-xs: 6px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 20px;
+  --space-2xl: 24px;
+
+  --shell-left-ratio: 20.92415%;
+  --sidebar-width: clamp(220px, var(--shell-left-ratio), 320px);
+  --sidebar-width-collapsed: 52px;
+  --settings-nav-width: clamp(220px, var(--shell-left-ratio), 320px);
+  --split-shadow-width: 3px;
+  --header-height: 52px;
+  --composer-main-ratio: 81.8%;
+  --composer-min-height: 96px;
+  --composer-radius: 20px;
+  --composer-submit-size: 32px;
+  --composer-pad-y: 5px;
+  --composer-pad-x: 11px;
+  --composer-gap: 4px;
+  --composer-input-top-inset: 6px;
+  --control-height: 32px;
+  --sidebar-row-height: 40px;
+  --sidebar-utility-height: 36px;
+
+  --transition-fast: 160ms cubic-bezier(0.2, 0.85, 0.28, 1);
+  --transition: 200ms cubic-bezier(0.2, 0.85, 0.28, 1);
+}
+
+:root,
+:root[data-theme='light'] {
+  --app-canvas: #ffffff;
+  --bg-primary: #ffffff;
+  --bg-elevated: #ffffff;
+  --bg-surface: #fafafa;
+  --bg-subtle: #fafafa;
+  --bg-hover: #ebebeb;
+  --bg-code: #f3f3f3;
+
+  --text-primary: #0d0d0d;
+  --text-secondary: #757575;
+  --text-muted: #9f9f9f;
+
+  --accent: #4b9aea;
+  --accent-hover: #3f88d1;
+  --accent-soft: rgba(75, 154, 234, 0.16);
+
+  --success: #23a55a;
+  --warning: #e08f2e;
+  --error: #d94f3d;
+
+  --sidebar-bg: #f7f7f7;
+  --sidebar-text: #757575;
+  --sidebar-text-active: #0d0d0d;
+  --sidebar-hover: #ebebeb;
+  --sidebar-selected: #ebebeb;
+  --sidebar-border: transparent;
+  --split-shadow-strip: linear-gradient(
+    to right,
+    #f6f6f6 0%,
+    #f4f4f4 45%,
+    #f2f2f2 75%,
+    #e8e8e8 100%
+  );
+
+  --border-color: transparent;
+  --border-input: transparent;
+  --focus-ring: rgba(75, 154, 234, 0.42);
+  --composer-shell: #ffffff;
+  --composer-seam: #ececec;
+  --composer-submit-bg: #868686;
+  --composer-submit-hover: var(--accent);
+  --composer-submit-disabled: #c2c2c2;
+  --composer-shadow: 0 0 0 1px var(--composer-seam), 0 6px 18px rgba(13, 13, 13, 0.06);
+
+  --shadow-sm: 0 4px 14px rgba(13, 13, 13, 0.08);
+  --shadow-md: 0 12px 32px rgba(13, 13, 13, 0.14);
+  --shadow-lg: 0 20px 46px rgba(13, 13, 13, 0.18);
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --app-canvas: #181818;
+  --bg-primary: #181818;
+  --bg-elevated: #181818;
+  --bg-surface: #1f1f1f;
+  --bg-subtle: #1f1f1f;
+  --bg-hover: #2b2b2b;
+  --bg-code: #242424;
+
+  --text-primary: #ffffff;
+  --text-secondary: #c7c7c7;
+  --text-muted: #9d9d9d;
+
+  --accent: #4b9aea;
+  --accent-hover: #65a8eb;
+  --accent-soft: rgba(75, 154, 234, 0.24);
+
+  --success: #3fbf6a;
+  --warning: #e0a64c;
+  --error: #ee6b5d;
+
+  --sidebar-bg: #202020;
+  --sidebar-text: #c7c7c7;
+  --sidebar-text-active: #ffffff;
+  --sidebar-hover: #2b2b2b;
+  --sidebar-selected: #2b2b2b;
+  --sidebar-border: transparent;
+  --split-shadow-strip: linear-gradient(
+    to right,
+    #202020 0%,
+    #232323 45%,
+    #2a2a2a 75%,
+    #303030 100%
+  );
+
+  --border-color: transparent;
+  --border-input: transparent;
+  --focus-ring: rgba(75, 154, 234, 0.5);
+  --composer-shell: #1c1c1c;
+  --composer-seam: #2a2a2a;
+  --composer-submit-bg: #8d8d8d;
+  --composer-submit-hover: var(--accent);
+  --composer-submit-disabled: #5f5f5f;
+  --composer-shadow: 0 0 0 1px var(--composer-seam), 0 8px 20px rgba(0, 0, 0, 0.28);
+
+  --shadow-sm: 0 8px 20px rgba(0, 0, 0, 0.38);
+  --shadow-md: 0 16px 40px rgba(0, 0, 0, 0.48);
+  --shadow-lg: 0 24px 54px rgba(0, 0, 0, 0.58);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  font-family: var(--font);
+  background: var(--app-canvas);
+  color: var(--text-primary);
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+:where(button, input, textarea, [tabindex]):focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--focus-ring);
+}
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-muted) 45%, transparent);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--text-muted) 58%, transparent);
+}
+
+@media (max-width: 1515px) {
+  :root {
+    --header-height: 50px;
+    --sidebar-row-height: 38px;
+    --composer-min-height: 94px;
+  }
+}
+
+@media (max-width: 1439px) {
+  :root {
+    --header-height: 48px;
+    --control-height: 30px;
+    --sidebar-row-height: 36px;
+    --sidebar-utility-height: 34px;
+    --composer-min-height: 90px;
+  }
+}
+
+@media (max-width: 1279px) {
+  :root {
+    --composer-min-height: 86px;
+    --composer-radius: 18px;
+    --composer-submit-size: 30px;
+    --composer-pad-y: 5px;
+    --composer-gap: 4px;
+    --composer-input-top-inset: 5px;
+  }
+}
+
+@media (max-width: 1023px) {
+  :root {
+    --sidebar-width-collapsed: 48px;
+    --header-height: 46px;
+    --control-height: 30px;
+    --sidebar-row-height: 34px;
+    --sidebar-utility-height: 34px;
+    --composer-min-height: 80px;
+    --composer-radius: 18px;
+    --composer-submit-size: 29px;
+    --composer-pad-y: 5px;
+    --composer-gap: 4px;
+    --composer-input-top-inset: 5px;
+  }
+}
+
+@media (max-width: 767px) {
+  :root {
+    --sidebar-width: 280px;
+    --sidebar-width-collapsed: 48px;
+    --settings-nav-width: 100%;
+    --header-height: 44px;
+    --control-height: 30px;
+    --sidebar-row-height: 34px;
+    --sidebar-utility-height: 34px;
+    --composer-min-height: 70px;
+    --composer-radius: 16px;
+    --composer-submit-size: 28px;
+    --composer-pad-y: 5px;
+    --composer-gap: 3px;
+    --composer-input-top-inset: 4px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

@@ -1,0 +1,3 @@
+interface:
+  display_name: "Dune Communication"
+  short_description: "Handle Dune channel and DM workflows safely"

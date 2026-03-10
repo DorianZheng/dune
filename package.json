@@ -1,0 +1,17 @@
+{
+  "name": "dune",
+  "private": true,
+  "packageManager": "pnpm@9.15.0",
+  "scripts": {
+    "build": "pnpm --filter @dune/shared build && pnpm --filter @dune/frontend build && pnpm --filter @dune/backend build",
+    "test": "pnpm --filter @dune/backend test",
+    "check": "pnpm build && pnpm test",
+    "start": "node --env-file-if-exists=.env packages/backend/dist/index.js"
+  },
+  "dependencies": {
+    "nanoid": "^5.1.6"
+  },
+  "devDependencies": {
+    "@types/nanoid": "^3.0.0"
+  }
+}

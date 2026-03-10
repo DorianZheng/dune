@@ -1,0 +1,3 @@
+interface:
+  display_name: "Dune Sandbox Operator"
+  short_description: "Operate global sandboxes via localhost proxy"
