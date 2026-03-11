@@ -49,6 +49,8 @@ const SKILLBOX_PATH = '/config/.local/bin:/lsiopy/bin:/usr/local/sbin:/usr/local
 /** MCP server config — written to /config/mcp-servers.json at startup.
  *  Must be a SEPARATE file because the CLI overwrites $HOME/.claude.json with its own state. */
 const MCP_CONFIG_PATH = '/config/mcp-servers.json'
+const AGENT_CLAUDE_VOLUME_PATH = '/config/.claude'
+const CLAUDE_STATE_PATH = '/config/.claude.json'
 const MCP_CONFIG = JSON.stringify({
   mcpServers: {
     computer: {
@@ -68,8 +70,8 @@ const NGINX_CONFIG_CANDIDATES = [
 ]
 const NGINX_WEBSOCKET_ANCHOR = '  location /websocket'
 const AGENT_SKILLS_SOURCE_DIR = resolveBundledAssetDir('agent-skills')
-const AGENT_SKILLS_VOLUME_PATH = '/config/.claude/skills'
-const CLAUDE_SETTINGS_PATH = '/config/.claude/settings.json'
+const AGENT_SKILLS_VOLUME_PATH = `${AGENT_CLAUDE_VOLUME_PATH}/skills`
+const CLAUDE_SETTINGS_PATH = `${AGENT_CLAUDE_VOLUME_PATH}/settings.json`
 const AGENT_SKILLS = [
   'dune-communication',
   'dune-host-operator',
@@ -670,7 +672,15 @@ async function upsertClaudeSettingsInBox(box: SimpleBox, agentId: string): Promi
 }
 
 function getAgentSkillsHostPath(agentId: string): string {
-  return join(config.agentsRoot, agentId, 'skills')
+  return join(getAgentClaudeHostPath(agentId), 'skills')
+}
+
+function getAgentClaudeHostPath(agentId: string): string {
+  return join(config.agentsRoot, agentId, '.claude')
+}
+
+function getAgentClaudeStateHostPath(agentId: string): string {
+  return join(config.agentsRoot, agentId, '.claude.json')
 }
 
 function collectFilesRecursive(rootDir: string, prefix = ''): string[] {
@@ -1223,14 +1233,21 @@ export async function startAgent(agentId: string): Promise<void> {
     // Ensure host storage directories exist for volume mounts
     const memoryHostPath = join(config.agentsRoot, agentId, 'memory')
     const miniappHostPath = join(config.agentsRoot, agentId, 'miniapps')
-    const skillsHostPath = getAgentSkillsHostPath(agentId)
+    const claudeHostPath = getAgentClaudeHostPath(agentId)
+    const claudeStateHostPath = getAgentClaudeStateHostPath(agentId)
     mkdirSync(memoryHostPath, { recursive: true })
     mkdirSync(miniappHostPath, { recursive: true })
+    mkdirSync(claudeHostPath, { recursive: true })
+    if (!existsSync(claudeStateHostPath)) {
+      writeFileSync(claudeStateHostPath, '{}\n', 'utf-8')
+    }
     syncAgentSkills(agentId)
+    // Persist Claude home + root state so `--continue` survives fresh runtime recreation.
     const baseVolumes: RuntimeVolumeSpec[] = [
       { hostPath: memoryHostPath, guestPath: '/config/memory' },
       { hostPath: miniappHostPath, guestPath: '/config/miniapps' },
-      { hostPath: skillsHostPath, guestPath: AGENT_SKILLS_VOLUME_PATH },
+      { hostPath: claudeHostPath, guestPath: AGENT_CLAUDE_VOLUME_PATH },
+      { hostPath: claudeStateHostPath, guestPath: CLAUDE_STATE_PATH },
     ]
     const runtimeVolumes = buildAgentRuntimeVolumes(agentId, baseVolumes)
     const hasConfiguredMounts = runtimeVolumes.length > baseVolumes.length

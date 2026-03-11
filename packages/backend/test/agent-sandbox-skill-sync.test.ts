@@ -77,7 +77,7 @@ test('sandbox operator skill is bundled by default and synced for running agents
 
     await agentManager.redeployAllDaemons()
 
-    const syncedSkillRoot = join(process.env.DATA_DIR!, 'agents', agent.id, 'skills', 'dune-sandbox-operator')
+    const syncedSkillRoot = join(process.env.DATA_DIR!, 'agents', agent.id, '.claude', 'skills', 'dune-sandbox-operator')
     assert.equal(statSync(syncedSkillRoot).isDirectory(), true)
     assert.equal(statSync(join(syncedSkillRoot, 'SKILL.md')).isFile(), true)
     assert.equal(statSync(join(syncedSkillRoot, 'agents', 'openai.yaml')).isFile(), true)
@@ -87,7 +87,7 @@ test('sandbox operator skill is bundled by default and synced for running agents
     assert.equal(statSync(join(syncedSkillRoot, 'scripts', 'sandbox-exec.sh')).isFile(), true)
     assert.equal(statSync(join(syncedSkillRoot, 'scripts', 'sandbox-files.sh')).isFile(), true)
 
-    const syncedHostSkillRoot = join(process.env.DATA_DIR!, 'agents', agent.id, 'skills', 'dune-host-operator')
+    const syncedHostSkillRoot = join(process.env.DATA_DIR!, 'agents', agent.id, '.claude', 'skills', 'dune-host-operator')
     assert.equal(statSync(syncedHostSkillRoot).isDirectory(), true)
     assert.equal(statSync(join(syncedHostSkillRoot, 'SKILL.md')).isFile(), true)
     assert.equal(statSync(join(syncedHostSkillRoot, 'scripts', 'host-exec.sh')).isFile(), true)
