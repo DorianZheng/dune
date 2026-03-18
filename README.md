@@ -37,14 +37,29 @@ Open [http://localhost:3100](http://localhost:3100).
 | Command | What it does |
 | --- | --- |
 | `make deploy` | Install dependencies, create `.env` if missing, and build the app. |
+| `make build` | Build shared, backend, frontend, and Electron packages. |
 | `make test` | Run the backend test suite. |
 | `make check` | Run the pre-PR validation gate: build plus backend tests. |
 | `make run` | Start the app with the built frontend assets. |
+| `make dev` | Start backend, frontend, and Electron together for local development. |
+| `make electron-dev` | Launch Electron only when backend and frontend dev servers are already running. |
+| `make electron-pack` | Build an unpacked Electron package for local testing. |
+| `make package` | Build an installable Electron app for the current platform. |
+| `pnpm --filter @dune/frontend e2e:electron` | Run the opt-in Electron smoke E2E against the built app. |
 | `make clean` | Remove build and dev artifacts while keeping local runtime data. |
 
 ## Development Mode
 
-Use the split backend/frontend workflow when you want live frontend iteration or to follow the sandbox manual checklist.
+For the default local development loop:
+
+```bash
+make deploy
+make dev
+```
+
+`make dev` uses [`scripts/dev.mjs`](/Users/zhengzhiquan/Workspace/dune/scripts/dev.mjs) to start the backend, Vite frontend, and Electron together.
+
+Use the split backend/frontend workflow below when you want live frontend iteration without Electron or you need to follow the sandbox manual checklist.
 
 1. Build dependencies once:
 
@@ -66,6 +81,12 @@ pnpm --filter @dune/frontend dev -- --host localhost --port 4173
 
 4. Open [http://localhost:4173](http://localhost:4173).
 
+5. If you want Electron on top of those existing dev servers, run in a third terminal:
+
+```bash
+make electron-dev
+```
+
 ## Monorepo Layout
 
 - `packages/frontend`: Lit-based SPA, workspace shell, agent views, sandbox UI, and apps UI.
@@ -77,7 +98,7 @@ pnpm --filter @dune/frontend dev -- --host localhost --port 4173
 - `DATA_DIR` defaults to `./data` and relocates the full runtime data root.
 - The SQLite database lives at `data/db/dune.db`.
 - Agent files live under `data/agents/`.
-- BoxLite state is exposed at `data/boxlite/`; the runtime also uses the shorter `data/b/` path internally to avoid Unix socket path limits.
+- BoxLite state lives at `data/boxlite/`.
 - `PORT` defaults to `3100`.
 - `ADMIN_PORT` defaults to `PORT + 1` and binds the admin plane to `127.0.0.1`.
 - `FRONTEND_DIST_PATH` defaults to `./packages/frontend/dist`; `make run` serves the built SPA from there.

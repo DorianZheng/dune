@@ -3,6 +3,8 @@ export type ThemeMode = 'light' | 'dark' | 'system'
 export interface UiPreferences {
   themeMode: ThemeMode
   sidebarCollapsed: boolean
+  sidebarWidth: number | null
+  inspectorWidth: number | null
 }
 
 type ResolvedTheme = 'light' | 'dark'
@@ -10,6 +12,8 @@ type ResolvedTheme = 'light' | 'dark'
 const STORAGE_KEYS = {
   themeMode: 'dune.ui.themeMode',
   sidebarCollapsed: 'dune.ui.sidebarCollapsed',
+  sidebarWidth: 'dune.ui.sidebarWidth',
+  inspectorWidth: 'dune.ui.inspectorWidth',
   memoryPaneWidths: 'dune.ui.memoryPaneWidths',
 } as const
 
@@ -32,6 +36,16 @@ function parseBoolean(value: string | null, fallback: boolean): boolean {
   return value === '1' || value === 'true'
 }
 
+function normalizePixelWidth(value: number): number | null {
+  if (!Number.isFinite(value) || value <= 0) return null
+  return Math.round(value)
+}
+
+function parsePixelWidth(value: string | null): number | null {
+  if (value == null || value.trim().length === 0) return null
+  return normalizePixelWidth(Number(value))
+}
+
 function parseAgentMemoryPaneWidths(value: string | null): Record<string, number> {
   if (!value) return {}
   try {
@@ -51,6 +65,8 @@ function parseAgentMemoryPaneWidths(value: string | null): Record<string, number
 class UiPreferencesStore extends EventTarget {
   private mode: ThemeMode = 'system'
   private sidebarCollapsedValue = false
+  private sidebarWidthValue: number | null = null
+  private inspectorWidthValue: number | null = null
   private memoryPaneWidthsValue: Record<string, number> = {}
   private mediaQuery: MediaQueryList | null = null
   private initialized = false
@@ -81,6 +97,8 @@ class UiPreferencesStore extends EventTarget {
     return {
       themeMode: this.mode,
       sidebarCollapsed: this.sidebarCollapsedValue,
+      sidebarWidth: this.sidebarWidthValue,
+      inspectorWidth: this.inspectorWidthValue,
     }
   }
 
@@ -90,6 +108,14 @@ class UiPreferencesStore extends EventTarget {
 
   get sidebarCollapsed(): boolean {
     return this.sidebarCollapsedValue
+  }
+
+  get sidebarWidth(): number | null {
+    return this.sidebarWidthValue
+  }
+
+  get inspectorWidth(): number | null {
+    return this.inspectorWidthValue
   }
 
   get resolvedTheme(): ResolvedTheme {
@@ -108,6 +134,30 @@ class UiPreferencesStore extends EventTarget {
     if (this.sidebarCollapsedValue === next) return
     this.sidebarCollapsedValue = next
     this.writeStorage(STORAGE_KEYS.sidebarCollapsed, next ? '1' : '0')
+    this.emitChange()
+  }
+
+  getSidebarWidth(): number | null {
+    return this.sidebarWidthValue
+  }
+
+  setSidebarWidth(widthPx: number) {
+    const normalized = normalizePixelWidth(widthPx)
+    if (normalized == null || this.sidebarWidthValue === normalized) return
+    this.sidebarWidthValue = normalized
+    this.writeStorage(STORAGE_KEYS.sidebarWidth, String(normalized))
+    this.emitChange()
+  }
+
+  getInspectorWidth(): number | null {
+    return this.inspectorWidthValue
+  }
+
+  setInspectorWidth(widthPx: number) {
+    const normalized = normalizePixelWidth(widthPx)
+    if (normalized == null || this.inspectorWidthValue === normalized) return
+    this.inspectorWidthValue = normalized
+    this.writeStorage(STORAGE_KEYS.inspectorWidth, String(normalized))
     this.emitChange()
   }
 
@@ -176,6 +226,8 @@ class UiPreferencesStore extends EventTarget {
     const themeModeRaw = this.readStorage(STORAGE_KEYS.themeMode)
     this.mode = isThemeMode(themeModeRaw) ? themeModeRaw : 'system'
     this.sidebarCollapsedValue = parseBoolean(this.readStorage(STORAGE_KEYS.sidebarCollapsed), false)
+    this.sidebarWidthValue = parsePixelWidth(this.readStorage(STORAGE_KEYS.sidebarWidth))
+    this.inspectorWidthValue = parsePixelWidth(this.readStorage(STORAGE_KEYS.inspectorWidth))
     this.memoryPaneWidthsValue = parseAgentMemoryPaneWidths(this.readStorage(STORAGE_KEYS.memoryPaneWidths))
   }
 

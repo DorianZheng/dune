@@ -12,6 +12,7 @@ import { sandboxesApi } from './api/sandboxes.js'
 import { todosApi } from './api/todos.js'
 import { settingsApi } from './api/settings.js'
 import { adminHostCommandsApi } from './api/admin-host-commands.js'
+import { adminHostOperatorApi } from './api/admin-host-operator.js'
 import { setupWebSocket } from './websocket/ws-server.js'
 import { reloadTimers } from './todos/todo-timer.js'
 import { stopAllAgents, closeRuntime } from './agents/agent-manager.js'
@@ -59,6 +60,7 @@ app.route('/api/sandboxes', sandboxesApi)
 app.route('/api/todos', todosApi)
 app.route('/api/settings', settingsApi)
 adminApp.route('/api/admin', adminHostCommandsApi)
+adminApp.route('/api/admin', adminHostOperatorApi)
 
 function isReservedFrontendPath(path: string): boolean {
   return path === '/api'
@@ -92,8 +94,11 @@ if (hasFrontendBuild) {
   })
 }
 
-export function startServer() {
-  const server = serve({ fetch: app.fetch, port: config.port }, (info) => {
+export async function startServer() {
+  const mainPort = config.port
+  const adminPortResolved = config.adminPort
+
+  const server = serve({ fetch: app.fetch, port: mainPort }, (info) => {
     console.log(`Dune backend listening on port ${info.port}`)
     if (hasFrontendBuild) {
       console.log(`Serving frontend from ${frontendDistAbsolutePath}`)
@@ -102,19 +107,23 @@ export function startServer() {
     try {
       writeFileSync(join(__dirname, '../.port'), String(info.port))
     } catch {}
+    // Notify parent process (Electron sidecar) that we're ready
+    if (process.send) {
+      process.send({ type: 'listening', port: info.port, adminPort: adminPortResolved })
+    }
   })
 
   // Handle port-in-use errors (common with --watch restarts)
   ;(server as any).on?.('error', (err: NodeJS.ErrnoException) => {
     if (err.code === 'EADDRINUSE') {
-      console.error(`Port ${config.port} is already in use. Kill the old process or set a different PORT env var.`)
+      console.error(`Port ${mainPort} is already in use.`)
       process.exit(1)
     }
   })
 
   const adminServer = serve({
     fetch: adminApp.fetch,
-    port: config.adminPort,
+    port: adminPortResolved,
     hostname: '127.0.0.1',
   }, (info) => {
     console.log(`Dune admin plane listening on 127.0.0.1:${info.port}`)
@@ -122,7 +131,7 @@ export function startServer() {
 
   ;(adminServer as any).on?.('error', (err: NodeJS.ErrnoException) => {
     if (err.code === 'EADDRINUSE') {
-      console.error(`Admin port ${config.adminPort} is already in use. Set ADMIN_PORT to a different value.`)
+      console.error(`Admin port ${adminPortResolved} is already in use.`)
       process.exit(1)
     }
   })

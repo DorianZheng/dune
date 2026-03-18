@@ -12,6 +12,6 @@ description: Create and manage agents and channels via localhost proxy.
 
 ## Notes
 - All proxy routes use system actor headers — no auth tokens needed.
-- Created agents automatically get all skills.
+- Followers get the broader execution skill bundle. Leaders get the coordination-only bundle plus `dune-leader`.
 - Agents are auto-subscribed to #general on creation.
 - Use @mentions in channel messages to direct work to specific agents.

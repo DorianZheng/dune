@@ -31,6 +31,7 @@ test('GET /api/settings/claude returns masked shape and never exposes raw secret
 
   const body = await res.json() as Record<string, unknown>
   assert.equal(body.selectedModelProvider, null)
+  assert.equal(body.defaultModelId, null)
   assert.equal(body.hasAnthropicApiKey, false)
   assert.equal(body.hasClaudeCodeOAuthToken, false)
   assert.equal(body.hasAnthropicAuthToken, false)
@@ -48,6 +49,7 @@ test('PUT /api/settings/claude preserves unspecified fields and clears with null
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       selectedModelProvider: 'claude',
+      defaultModelId: 'sonnet',
       anthropicApiKey: 'db-api-key',
       claudeCodeOAuthToken: 'db-oauth-token',
       anthropicAuthToken: 'db-auth-token',
@@ -78,6 +80,7 @@ test('PUT /api/settings/claude preserves unspecified fields and clears with null
 
   const storedAfterPartial = settingsStore.getStoredClaudeSettings()
   assert.equal(storedAfterPartial.selectedModelProvider, 'claude')
+  assert.equal(storedAfterPartial.defaultModelId, 'sonnet')
   assert.equal(storedAfterPartial.anthropicApiKey, 'db-api-key')
   assert.equal(storedAfterPartial.claudeCodeOAuthToken, 'db-oauth-token')
   assert.equal(storedAfterPartial.anthropicAuthToken, 'db-auth-token')
@@ -89,6 +92,7 @@ test('PUT /api/settings/claude preserves unspecified fields and clears with null
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       selectedModelProvider: '',
+      defaultModelId: '',
       anthropicApiKey: null,
       anthropicBaseUrl: '',
     }),
@@ -97,6 +101,7 @@ test('PUT /api/settings/claude preserves unspecified fields and clears with null
 
   const storedAfterClear = settingsStore.getStoredClaudeSettings()
   assert.equal(storedAfterClear.selectedModelProvider, null)
+  assert.equal(storedAfterClear.defaultModelId, null)
   assert.equal(storedAfterClear.anthropicApiKey, null)
   assert.equal(storedAfterClear.anthropicBaseUrl, null)
   assert.equal(storedAfterClear.claudeCodeOAuthToken, 'db-oauth-token')
@@ -115,6 +120,20 @@ test('PUT /api/settings/claude rejects invalid selectedModelProvider values', as
   assert.equal(res.status, 400)
   const body = await res.json() as { error?: string }
   assert.match(body.error || '', /selectedModelProvider/i)
+})
+
+test('PUT /api/settings/claude rejects invalid defaultModelId values', async () => {
+  const res = await app.request('/api/settings/claude', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      defaultModelId: 'opus; rm -rf /',
+    }),
+  })
+
+  assert.equal(res.status, 400)
+  const body = await res.json() as { error?: string }
+  assert.match(body.error || '', /defaultModelId/i)
 })
 
 test('PUT /api/settings/claude triggers running-agents sync', async () => {

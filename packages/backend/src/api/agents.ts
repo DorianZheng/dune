@@ -9,15 +9,17 @@ import * as agentRuntimeMountStore from '../storage/agent-runtime-mount-store.js
 import * as miniappStore from '../storage/miniapp-store.js'
 import * as agentManager from '../agents/agent-manager.js'
 import * as mailboxService from '../mailbox/mailbox-service.js'
+import * as hostOperatorService from '../host-operator/host-operator-service.js'
 import { config } from '../config.js'
 import { broadcastAll, broadcastToChannel } from '../websocket/ws-server.js'
 import * as sandboxManager from '../sandboxes/sandbox-manager.js'
 import { parseMentions } from '../utils/mentions.js'
-import * as hostCommandService from '../host-commands/host-command-service.js'
 import type {
   CreateAgentMountRequest,
-  HostCommandCreateRequest,
-  HostExecApprovalModeType,
+  AgentRoleType,
+  AgentWorkModeType,
+  HostOperatorCreateRequest,
+  HostOperatorApprovalModeType,
   SandboxActorTypeType,
   UpdateAgentMountRequest,
 } from '@dune/shared'
@@ -28,6 +30,7 @@ import {
 } from '../utils/host-directory-picker.js'
 
 export const agentsApi = new Hono()
+const CLAUDE_MODEL_ID_PATTERN = /^[A-Za-z0-9._:-]+$/
 
 function isNoResponse(text: string): boolean {
   const trimmed = text.trim()
@@ -78,10 +81,10 @@ function buildMailboxPrompt(unreadCount: number): string {
   ].join('\n')
 }
 
-function appendTeamRoster(promptParts: string[], allAgents: Array<{ id: string; name: string; personality: string }>, agentId: string): void {
+function appendTeamRoster(promptParts: string[], allAgents: Array<{ id: string; name: string; personality: string; role: AgentRoleType }>, agentId: string): void {
   const otherAgents = allAgents.filter((agent) => agent.id !== agentId)
   if (otherAgents.length === 0) return
-  const roster = otherAgents.map((agent) => `${agent.name} (${agent.personality.split('.')[0]})`).join(', ')
+  const roster = otherAgents.map((agent) => `${agent.name} [${agent.role}] (${agent.personality.split('.')[0]})`).join(', ')
   promptParts.push(`[Team members: ${roster}]`)
 }
 
@@ -93,9 +96,33 @@ type ActorIdentity = {
   actorId: string
 }
 
-function normalizeHostExecApprovalMode(value: unknown): HostExecApprovalModeType {
+function normalizeHostOperatorApprovalMode(value: unknown): HostOperatorApprovalModeType {
   if (value === 'approval-required' || value === 'dangerously-skip') return value
-  throw new Error('invalid_host_exec_approval_mode')
+  throw new Error('invalid_host_operator_approval_mode')
+}
+
+function normalizeStringArray(value: unknown, errorMessage: string): string[] {
+  if (!Array.isArray(value)) throw new Error(errorMessage)
+  return [...new Set(value.map((item) => String(item).trim()).filter(Boolean))]
+}
+
+function normalizeAgentRole(value: unknown): AgentRoleType {
+  if (value === 'leader' || value === 'follower') return value
+  throw new Error('invalid_agent_role')
+}
+
+function normalizeAgentWorkMode(value: unknown): AgentWorkModeType {
+  if (value === 'normal' || value === 'plan-first') return value
+  throw new Error('invalid_agent_work_mode')
+}
+
+function normalizeClaudeModelId(value: unknown): string | null {
+  if (value == null) return null
+  if (typeof value !== 'string') throw new Error('invalid_model_id')
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  if (!CLAUDE_MODEL_ID_PATTERN.test(trimmed)) throw new Error('invalid_model_id')
+  return trimmed
 }
 
 type EnsureAgentRunningFn = typeof agentManager.ensureAgentRunning
@@ -138,16 +165,25 @@ function parseActor(c: any): ActorIdentity {
   return { actorType, actorId }
 }
 
-function mapHostCommandErrorToResponse(c: any, err: any) {
-  const message = String(err?.message || 'host_command_error')
+function mapHostOperatorErrorToResponse(c: any, err: any) {
+  const message = String(err?.message || 'host_operator_error')
   if (message === 'missing_actor_identity') return c.json({ error: message }, 401)
   if (message === 'forbidden') return c.json({ error: message }, 403)
-  if (message === 'invalid_scope') return c.json({ error: message }, 400)
-  if (message === 'workspace_scope_violation') return c.json({ error: message }, 400)
-  if (message === 'full_host_cwd_must_be_absolute') return c.json({ error: message }, 400)
-  if (message === 'invalid_cwd') return c.json({ error: message }, 400)
+  if (message === 'bundle_id_not_allowed' || message === 'path_not_allowed') return c.json({ error: message }, 403)
+  if (message === 'host_operator_unavailable') return c.json({ error: message }, 503)
+  if (message === 'bundle_id_required') return c.json({ error: message }, 400)
+  if (message === 'path_required') return c.json({ error: message }, 400)
+  if (message === 'path_must_be_absolute') return c.json({ error: message }, 400)
+  if (message === 'path_not_found') return c.json({ error: message }, 400)
+  if (message === 'parent_path_not_found') return c.json({ error: message }, 400)
+  if (message === 'point_required') return c.json({ error: message }, 400)
+  if (message === 'to_point_required') return c.json({ error: message }, 400)
+  if (message === 'query_required') return c.json({ error: message }, 400)
+  if (message === 'text_required') return c.json({ error: message }, 400)
+  if (message === 'key_required') return c.json({ error: message }, 400)
+  if (message === 'url_required') return c.json({ error: message }, 400)
+  if (message === 'invalid_host_operator_request') return c.json({ error: message }, 400)
   if (message === 'request_not_pending') return c.json({ error: message }, 409)
-  if (message === 'elevated_confirmation_required') return c.json({ error: message }, 400)
   return c.json({ error: message }, 400)
 }
 
@@ -171,6 +207,27 @@ agentsApi.post('/', async (c) => {
   }
   body.name = body.name.trim()
   body.personality = body.personality.trim()
+  if (Object.prototype.hasOwnProperty.call(body, 'role')) {
+    try {
+      body.role = normalizeAgentRole(body.role)
+    } catch (err: any) {
+      return c.json({ error: String(err?.message || 'invalid_agent_role') }, 400)
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'workMode')) {
+    try {
+      body.workMode = normalizeAgentWorkMode(body.workMode)
+    } catch (err: any) {
+      return c.json({ error: String(err?.message || 'invalid_agent_work_mode') }, 400)
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'modelIdOverride')) {
+    try {
+      body.modelIdOverride = normalizeClaudeModelId(body.modelIdOverride)
+    } catch (err: any) {
+      return c.json({ error: String(err?.message || 'invalid_model_id') }, 400)
+    }
+  }
   const agent = agentStore.createAgent(body)
   // Auto-subscribe new agents to #general
   const general = channelStore.getChannelByName('general')
@@ -244,9 +301,9 @@ agentsApi.post('/start-all', async (c) => {
 
   await Promise.all(workers)
   // BoxLite breaks guest→host networking when new containers start.
-  // Redeploy daemons on ALL running agents with fresh network detection.
-  void agentManager.redeployAllDaemons().catch((err: any) => {
-    console.warn(`[agents/start-all] redeploy daemons failed: ${err?.message || err}`)
+  // Reconcile daemons on running agents with fresh network detection.
+  void agentManager.reconcileAllRunningCommunicationDaemons().catch((err: any) => {
+    console.warn(`[agents/start-all] reconcile daemons failed: ${err?.message || err}`)
   })
   return c.json(results)
 })
@@ -267,9 +324,9 @@ agentsApi.post('/stop-all', async (c) => {
   return c.json({ ok: true })
 })
 
-// ── Host Commands (main plane request/status only) ───────────────────
+// ── Host Operator (main plane request/status only) ───────────────────
 
-agentsApi.post('/:id/host-commands', async (c) => {
+agentsApi.post('/:id/host-operator', async (c) => {
   try {
     const agentId = c.req.param('id')
     const agent = agentStore.getAgent(agentId)
@@ -280,42 +337,27 @@ agentsApi.post('/:id/host-commands', async (c) => {
       throw new Error('forbidden')
     }
 
-    const body = await c.req.json() as HostCommandCreateRequest
-    const command = typeof body?.command === 'string' ? body.command.trim() : ''
-    if (!command) return c.json({ error: 'invalid_command' }, 400)
-
-    const args = Array.isArray(body?.args) ? body.args.map((item) => String(item)) : []
-    const scope = hostCommandService.normalizeHostCommandScope(
-      typeof body?.scope === 'string' ? body.scope : undefined,
-    )
-    const cwd = hostCommandService.normalizeHostCommandCwd(
-      scope,
-      typeof body?.cwd === 'string' ? body.cwd : undefined,
-    )
-
-    const created = await hostCommandService.submitHostCommandRequest({
-      agentId,
+    const body = await c.req.json() as HostOperatorCreateRequest
+    const created = await hostOperatorService.submitHostOperatorRequest({
+      agent,
       requestedByType: actor.actorType,
       requestedById: actor.actorId,
-      command,
-      args,
-      cwd,
-      scope,
-      approvalMode: agent.hostExecApprovalMode,
+      request: body,
+      approvalMode: agent.hostOperatorApprovalMode,
     })
 
-    const finalState = await hostCommandService.waitForTerminalHostCommand(created.requestId)
+    const finalState = await hostOperatorService.waitForTerminalHostOperatorRequest(created.requestId)
     if (!finalState) return c.json({ error: 'not_found' }, 404)
     return c.json(finalState)
   } catch (err: any) {
-    return mapHostCommandErrorToResponse(c, err)
+    return mapHostOperatorErrorToResponse(c, err)
   }
 })
 
-agentsApi.get('/host-commands/:requestId', async (c) => {
+agentsApi.get('/host-operator/:requestId', async (c) => {
   try {
     const actor = parseActor(c)
-    const request = hostCommandService.getHostCommandRequest(c.req.param('requestId'))
+    const request = hostOperatorService.getHostOperatorRequest(c.req.param('requestId'))
     if (!request) return c.json({ error: 'not_found' }, 404)
 
     const isOwnerAgent = actor.actorType === 'system' && actor.actorId === `agent:${request.agentId}`
@@ -326,8 +368,16 @@ agentsApi.get('/host-commands/:requestId', async (c) => {
 
     return c.json(request)
   } catch (err: any) {
-    return mapHostCommandErrorToResponse(c, err)
+    return mapHostOperatorErrorToResponse(c, err)
   }
+})
+
+agentsApi.post('/:id/host-commands', async (c) => {
+  return c.json({ error: 'host_exec_removed' }, 410)
+})
+
+agentsApi.get('/host-commands/:requestId', async (c) => {
+  return c.json({ error: 'host_exec_removed' }, 410)
 })
 
 // ── Centralized Apps endpoint ────────────────────────────────────────
@@ -649,7 +699,7 @@ agentsApi.delete('/:id/mounts/:mountId', async (c) => {
 agentsApi.get('/:id/skills', (c) => {
   const agent = agentStore.getAgent(c.req.param('id'))
   if (!agent) return c.json({ error: 'Not found' }, 404)
-  return c.json(agentManager.listSkills())
+  return c.json(agentManager.listSkills(agent))
 })
 
 agentsApi.get('/:id/system-prompt', (c) => {
@@ -676,21 +726,56 @@ agentsApi.put('/:id', async (c) => {
 
   const normalizedBody = body && typeof body === 'object' ? body : {}
   const nextBody = { ...normalizedBody }
-  if (Object.prototype.hasOwnProperty.call(normalizedBody, 'hostExecApprovalMode')) {
+  if (Object.prototype.hasOwnProperty.call(normalizedBody, 'hostOperatorApprovalMode')) {
     try {
-      nextBody.hostExecApprovalMode = normalizeHostExecApprovalMode((normalizedBody as Record<string, unknown>).hostExecApprovalMode)
+      nextBody.hostOperatorApprovalMode = normalizeHostOperatorApprovalMode((normalizedBody as Record<string, unknown>).hostOperatorApprovalMode)
     } catch (err: any) {
-      return c.json({ error: String(err?.message || 'invalid_host_exec_approval_mode') }, 400)
+      return c.json({ error: String(err?.message || 'invalid_host_operator_approval_mode') }, 400)
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(normalizedBody, 'hostOperatorApps')) {
+    try {
+      nextBody.hostOperatorApps = normalizeStringArray((normalizedBody as Record<string, unknown>).hostOperatorApps, 'invalid_host_operator_apps')
+    } catch (err: any) {
+      return c.json({ error: String(err?.message || 'invalid_host_operator_apps') }, 400)
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(normalizedBody, 'hostOperatorPaths')) {
+    try {
+      nextBody.hostOperatorPaths = normalizeStringArray((normalizedBody as Record<string, unknown>).hostOperatorPaths, 'invalid_host_operator_paths')
+    } catch (err: any) {
+      return c.json({ error: String(err?.message || 'invalid_host_operator_paths') }, 400)
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(normalizedBody, 'role')) {
+    try {
+      nextBody.role = normalizeAgentRole((normalizedBody as Record<string, unknown>).role)
+    } catch (err: any) {
+      return c.json({ error: String(err?.message || 'invalid_agent_role') }, 400)
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(normalizedBody, 'workMode')) {
+    try {
+      nextBody.workMode = normalizeAgentWorkMode((normalizedBody as Record<string, unknown>).workMode)
+    } catch (err: any) {
+      return c.json({ error: String(err?.message || 'invalid_agent_work_mode') }, 400)
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(normalizedBody, 'modelIdOverride')) {
+    try {
+      nextBody.modelIdOverride = normalizeClaudeModelId((normalizedBody as Record<string, unknown>).modelIdOverride)
+    } catch (err: any) {
+      return c.json({ error: String(err?.message || 'invalid_model_id') }, 400)
     }
   }
 
   const agent = agentStore.updateAgent(c.req.param('id'), nextBody)
   if (!agent) return c.json({ error: 'Not found' }, 404)
   if (
-    existing.hostExecApprovalMode !== 'dangerously-skip'
-    && agent.hostExecApprovalMode === 'dangerously-skip'
+    existing.hostOperatorApprovalMode !== 'dangerously-skip'
+    && agent.hostOperatorApprovalMode === 'dangerously-skip'
   ) {
-    await hostCommandService.autoApprovePendingHostCommandRequestsForAgent(agent.id)
+    await hostOperatorService.autoApprovePendingHostOperatorRequestsForAgent(agent)
   }
   broadcastAll({
     type: 'workspace:invalidate',
@@ -733,6 +818,18 @@ agentsApi.post('/:id/stop', async (c) => {
     await agentManager.stopAgent(agent.id)
     broadcastAll({ type: 'agent:status', payload: { agentId: agent.id, status: 'stopped' } })
     return c.json({ ok: true, status: 'stopped' })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
+agentsApi.post('/:id/interrupt', async (c) => {
+  const agent = agentStore.getAgent(c.req.param('id'))
+  if (!agent) return c.json({ error: 'Not found' }, 404)
+  try {
+    const interrupted = await agentManager.interruptAgentWorkflow(agent.id)
+    const status = agentStore.getAgent(agent.id)?.status || agent.status
+    return c.json({ ok: true, interrupted, status })
   } catch (err: any) {
     return c.json({ error: err.message }, 500)
   }
@@ -934,7 +1031,7 @@ agentsApi.post('/:id/respond', async (c) => {
 // ── Agent Memory (flat file operations) ──────────────────────────────
 
 function getMemoryDir(agentId: string): string {
-  return join(config.agentsRoot, agentId, 'memory')
+  return join(config.agentsRoot, agentId, '.dune', 'memory')
 }
 
 function safeRelativePath(filePath: string): string | null {
@@ -1059,12 +1156,14 @@ agentsApi.post('/:id/dm', async (c) => {
 
   const body = await c.req.json()
   const content = body.content?.trim()
+  const clientRequestId = typeof body.clientRequestId === 'string' ? body.clientRequestId.trim() : ''
   if (!content) return c.json({ error: 'content required' }, 400)
 
   try {
     const response = await agentManager.sendMessage(agentId, [{ authorName: 'User', content }], {
       source: 'dm',
       content,
+      clientRequestId: clientRequestId || undefined,
     })
     return c.json({ response })
   } catch (err: any) {

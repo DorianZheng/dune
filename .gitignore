@@ -21,3 +21,9 @@ packages/*/dist/
 
 *.log
 .DS_Store
+__pycache__/
+*.tgz
+
+# Native build artifacts
+packages/backend/native/**/.build/
+packages/backend/bin/

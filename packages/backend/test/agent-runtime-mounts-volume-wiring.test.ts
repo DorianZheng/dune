@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -48,11 +48,11 @@ test('runtime volume wiring includes configured agent mounts with readOnly mappi
       readOnly: false,
     })
 
-    const base = [{ hostPath: '/host/base', guestPath: '/config/memory' }]
+    const base = agentManager.__buildAgentRuntimeBaseVolumesForTests(agent.id)
     const merged = agentManager.__buildAgentRuntimeVolumesForTests(agent.id, base)
 
     assert.equal(merged.length, 3)
-    assert.deepEqual(merged[0], { hostPath: '/host/base', guestPath: '/config/memory' })
+    assert.equal(merged[0]?.guestPath, '/config/.dune')
     assert.ok(merged.some((item) => item.hostPath === hostDirA && item.guestPath === '/workspace/project-a' && item.readOnly === true))
     assert.ok(merged.some((item) => item.hostPath === hostDirB && item.guestPath === '/workspace/project-b' && item.readOnly === false))
   } finally {
@@ -81,4 +81,17 @@ test('runtime volume wiring fails fast when configured host path no longer exist
     () => agentManager.__buildAgentRuntimeVolumesForTests(agent.id, []),
     /invalid_runtime_mount:.*:host_path_not_found/,
   )
+})
+
+test('default runtime base volumes use only directory-backed mounts', () => {
+  clearTables()
+  const agent = agentStore.createAgent({
+    name: 'Runtime Base Volume Agent',
+    personality: 'runtime base volume wiring',
+  })
+
+  const baseVolumes = agentManager.__buildAgentRuntimeBaseVolumesForTests(agent.id)
+  assert.equal(baseVolumes.length, 1)
+  assert.equal(baseVolumes[0]?.guestPath, '/config/.dune')
+  assert.equal(existsSync(join(process.env.DATA_DIR!, 'agents', agent.id, '.dune', '.claude.json')), true)
 })

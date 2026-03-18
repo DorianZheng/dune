@@ -2,6 +2,15 @@ import { LitElement, html, css } from 'lit'
 import { customElement, property, state as litState } from 'lit/decorators.js'
 import type { Channel, Agent } from '@dune/shared'
 import * as api from '../../services/api-client.js'
+import { uiPreferences } from '../../state/ui-preferences.js'
+
+const DEFAULT_INSPECTOR_WIDTH_PX = 520
+const INSPECTOR_MIN_WIDTH_PX = 360
+const INSPECTOR_MAX_WIDTH_PX = 760
+const INSPECTOR_VIEWPORT_GUTTER_PX = 24
+const INSPECTOR_RESIZE_STEP_PX = 16
+const INSPECTOR_RESIZE_STEP_FAST_PX = 32
+const INSPECTOR_RESIZE_DESKTOP_QUERY = '(min-width: 761px)'
 
 @customElement('channel-details-panel')
 export class ChannelDetailsPanel extends LitElement {
@@ -10,6 +19,30 @@ export class ChannelDetailsPanel extends LitElement {
   @litState() private subscribers: string[] = []
   @litState() private editingName = false
   @litState() private editingDesc = false
+  @litState() private inspectorWidthPx = DEFAULT_INSPECTOR_WIDTH_PX
+  @litState() private inspectorResizeActive = false
+  private inspectorResizePointerId: number | null = null
+  private inspectorResizeStartX = 0
+  private inspectorResizeStartWidth = DEFAULT_INSPECTOR_WIDTH_PX
+  private inspectorResizeListenersBound = false
+  private readonly uiPreferenceChangeHandler = () => this.syncInspectorWidthFromPreferences()
+  private readonly windowResizeHandler = () => {
+    if (this.inspectorResizeActive && !this.isResizableInspectorLayout()) {
+      this.finishInspectorResize()
+      return
+    }
+    if (!this.isResizableInspectorLayout()) {
+      this.requestUpdate()
+      return
+    }
+    const nextWidth = this.clampInspectorWidth(this.inspectorWidthPx)
+    if (nextWidth !== this.inspectorWidthPx) {
+      this.inspectorWidthPx = nextWidth
+      uiPreferences.setInspectorWidth(nextWidth)
+      return
+    }
+    this.requestUpdate()
+  }
 
   static styles = css`
     :host {
@@ -17,35 +50,79 @@ export class ChannelDetailsPanel extends LitElement {
       inset: 0;
       z-index: 100;
       display: flex;
-      align-items: center;
-      justify-content: center;
+      align-items: stretch;
+      justify-content: flex-end;
     }
     .backdrop {
       position: absolute;
       inset: 0;
-      background: rgba(15, 23, 42, 0.45);
-      backdrop-filter: blur(2px);
+      background: var(--sheet-scrim);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      display: flex;
+      align-items: stretch;
+      justify-content: flex-end;
+      padding: 12px 0 12px 12px;
+    }
+    .sheet-shell {
+      display: grid;
+      grid-template-columns: 6px auto;
+      gap: 0;
+      min-height: 0;
+      height: 100%;
+      align-items: stretch;
+    }
+    .inspector-resizer {
+      width: 6px;
+      min-height: 0;
+      border: none;
+      border-radius: var(--radius-sm);
+      background: transparent;
+      cursor: col-resize;
+      touch-action: none;
       display: flex;
       align-items: center;
       justify-content: center;
+      padding: 0;
+    }
+    .inspector-resizer::before {
+      content: '';
+      width: 2px;
+      height: 38px;
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--border-primary) 72%, transparent);
+      transition: background var(--transition-fast), height var(--transition-fast);
+    }
+    .inspector-resizer:hover::before,
+    .inspector-resizer.active::before {
+      background: color-mix(in srgb, var(--accent) 55%, var(--border-primary));
+      height: 48px;
+    }
+    .inspector-resizer:focus-visible {
+      outline: 2px solid var(--focus-ring);
+      outline-offset: 1px;
     }
     .modal {
       position: relative;
-      width: min(560px, 92vw);
-      max-height: 85vh;
-      background: var(--bg-elevated);
-      border: none;
-      border-radius: var(--radius-lg);
+      width: min(480px, 40vw);
+      height: 100%;
+      max-height: none;
+      background: var(--sheet-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 30px 0 0 30px;
       box-shadow: var(--shadow-lg);
       display: flex;
       flex-direction: column;
       overflow: hidden;
     }
+    .modal.resize-active {
+      transition: none;
+    }
     .modal-header {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 14px 14px 10px;
+      padding: 18px 18px 12px;
     }
     .channel-title {
       display: flex;
@@ -264,6 +341,23 @@ export class ChannelDetailsPanel extends LitElement {
     }
 
     @media (max-width: 760px) {
+      :host,
+      .backdrop {
+        align-items: center;
+        justify-content: center;
+      }
+
+      .backdrop {
+        padding: 0;
+      }
+
+      .modal {
+        width: min(560px, 92vw);
+        height: auto;
+        max-height: 88vh;
+        border-radius: 24px;
+      }
+
       .modal-header {
         padding: 16px 16px 12px;
       }
@@ -290,11 +384,17 @@ export class ChannelDetailsPanel extends LitElement {
     super.connectedCallback()
     this._keyHandler = (e: KeyboardEvent) => { if (e.key === 'Escape') this.handleClose() }
     document.addEventListener('keydown', this._keyHandler)
+    this.inspectorWidthPx = this.clampInspectorWidth(uiPreferences.getInspectorWidth() ?? DEFAULT_INSPECTOR_WIDTH_PX)
+    uiPreferences.addEventListener('change', this.uiPreferenceChangeHandler)
+    window.addEventListener('resize', this.windowResizeHandler)
   }
 
   disconnectedCallback() {
-    super.disconnectedCallback()
+    this.finishInspectorResize()
     if (this._keyHandler) document.removeEventListener('keydown', this._keyHandler)
+    uiPreferences.removeEventListener('change', this.uiPreferenceChangeHandler)
+    window.removeEventListener('resize', this.windowResizeHandler)
+    super.disconnectedCallback()
   }
 
   updated(changed: Map<string, unknown>) {
@@ -320,6 +420,106 @@ export class ChannelDetailsPanel extends LitElement {
 
   private handleBackdropClick(e: Event) {
     if ((e.target as HTMLElement).classList.contains('backdrop')) this.handleClose()
+  }
+
+  private syncInspectorWidthFromPreferences() {
+    const persisted = uiPreferences.getInspectorWidth()
+    if (persisted == null) return
+    const nextWidth = this.clampInspectorWidth(persisted)
+    if (nextWidth !== this.inspectorWidthPx) {
+      this.inspectorWidthPx = nextWidth
+    }
+  }
+
+  private isResizableInspectorLayout(): boolean {
+    return window.matchMedia(INSPECTOR_RESIZE_DESKTOP_QUERY).matches
+  }
+
+  private getInspectorWidthEffectiveMax(viewportWidth = window.innerWidth): number {
+    if (!Number.isFinite(viewportWidth) || viewportWidth <= 0) return INSPECTOR_MAX_WIDTH_PX
+    const viewportBound = Math.floor(viewportWidth - INSPECTOR_VIEWPORT_GUTTER_PX)
+    return Math.max(INSPECTOR_MIN_WIDTH_PX, Math.min(INSPECTOR_MAX_WIDTH_PX, viewportBound))
+  }
+
+  private clampInspectorWidth(width: number, viewportWidth = window.innerWidth): number {
+    if (!Number.isFinite(width)) return DEFAULT_INSPECTOR_WIDTH_PX
+    const min = INSPECTOR_MIN_WIDTH_PX
+    const max = this.getInspectorWidthEffectiveMax(viewportWidth)
+    if (width < min) return min
+    if (width > max) return max
+    return Math.round(width)
+  }
+
+  private persistInspectorWidth() {
+    const nextWidth = this.clampInspectorWidth(this.inspectorWidthPx)
+    this.inspectorWidthPx = nextWidth
+    uiPreferences.setInspectorWidth(nextWidth)
+  }
+
+  private bindInspectorResizeListeners() {
+    if (this.inspectorResizeListenersBound) return
+    this.inspectorResizeListenersBound = true
+    window.addEventListener('pointermove', this.handleInspectorResizePointerMove)
+    window.addEventListener('pointerup', this.handleInspectorResizePointerEnd)
+    window.addEventListener('pointercancel', this.handleInspectorResizePointerEnd)
+  }
+
+  private unbindInspectorResizeListeners() {
+    if (!this.inspectorResizeListenersBound) return
+    this.inspectorResizeListenersBound = false
+    window.removeEventListener('pointermove', this.handleInspectorResizePointerMove)
+    window.removeEventListener('pointerup', this.handleInspectorResizePointerEnd)
+    window.removeEventListener('pointercancel', this.handleInspectorResizePointerEnd)
+  }
+
+  private finishInspectorResize() {
+    const wasActive = this.inspectorResizeActive
+    this.inspectorResizeActive = false
+    this.inspectorResizePointerId = null
+    this.unbindInspectorResizeListeners()
+    if (wasActive) this.persistInspectorWidth()
+  }
+
+  private readonly handleInspectorResizePointerMove = (event: PointerEvent) => {
+    if (!this.inspectorResizeActive) return
+    if (this.inspectorResizePointerId !== null && event.pointerId !== this.inspectorResizePointerId) return
+    const deltaX = event.clientX - this.inspectorResizeStartX
+    const width = this.inspectorResizeStartWidth - deltaX
+    this.inspectorWidthPx = this.clampInspectorWidth(width)
+  }
+
+  private readonly handleInspectorResizePointerEnd = (event: PointerEvent) => {
+    if (!this.inspectorResizeActive) return
+    if (this.inspectorResizePointerId !== null && event.pointerId !== this.inspectorResizePointerId) return
+    this.finishInspectorResize()
+  }
+
+  private handleInspectorResizePointerDown(event: PointerEvent) {
+    if (!this.isResizableInspectorLayout()) return
+    event.preventDefault()
+    const handle = event.currentTarget as HTMLElement | null
+    if (handle?.setPointerCapture) {
+      try {
+        handle.setPointerCapture(event.pointerId)
+      } catch {
+        // Continue using window listeners if pointer capture is unavailable.
+      }
+    }
+    this.inspectorResizeActive = true
+    this.inspectorResizePointerId = event.pointerId
+    this.inspectorResizeStartX = event.clientX
+    this.inspectorResizeStartWidth = this.clampInspectorWidth(this.inspectorWidthPx)
+    this.bindInspectorResizeListeners()
+  }
+
+  private handleInspectorResizeKeydown(event: KeyboardEvent) {
+    if (!this.isResizableInspectorLayout()) return
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+    event.preventDefault()
+    const step = event.shiftKey ? INSPECTOR_RESIZE_STEP_FAST_PX : INSPECTOR_RESIZE_STEP_PX
+    const delta = event.key === 'ArrowLeft' ? step : -step
+    this.inspectorWidthPx = this.clampInspectorWidth(this.inspectorWidthPx + delta)
+    this.persistInspectorWidth()
   }
 
   private startEditName() {
@@ -410,63 +610,88 @@ export class ChannelDetailsPanel extends LitElement {
   render() {
     const ch = this.channel
     if (!ch) return html``
+    const inspectorResizable = this.isResizableInspectorLayout()
+    const inspectorWidth = this.clampInspectorWidth(this.inspectorWidthPx)
+    const inspectorWidthMax = this.getInspectorWidthEffectiveMax()
+    const modalClass = ['modal', this.inspectorResizeActive ? 'resize-active' : ''].filter(Boolean).join(' ')
+    const modalStyle = inspectorResizable ? `width:${inspectorWidth}px;` : ''
+    const modal = html`
+      <div class=${modalClass} style=${modalStyle} data-testid="channel-details-modal">
+        <div class="modal-header">
+          <div class="channel-title">
+            <span class="hash">#</span>
+            ${this.editingName
+              ? html`<input class="name-input" .value=${ch.name} @blur=${this.saveName} @keydown=${this.handleNameKeydown}>`
+              : html`<span class="name" @click=${this.startEditName}>${ch.name}</span>`
+            }
+          </div>
+          <button class="close-btn" type="button" @click=${this.handleClose} aria-label="Close channel details">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M6 6l12 12M18 6L6 18" stroke-linecap="round"></path>
+            </svg>
+          </button>
+        </div>
+
+        <div class="tab-content">
+          <div class="section-card">
+            <div class="section-title">Description</div>
+            ${this.editingDesc
+              ? html`<textarea class="desc-input" .value=${ch.description || ''} @blur=${this.saveDesc} @keydown=${this.handleDescKeydown}></textarea>`
+              : ch.description
+                ? html`<p class="section-content" @click=${this.startEditDesc}>${ch.description}</p>`
+                : html`<p class="placeholder" @click=${this.startEditDesc}>Add a description...</p>`
+            }
+          </div>
+
+          <div class="section-card">
+            <div class="section-title">Members (${this.subscribers.length})</div>
+            ${this.agents.map(a => {
+              const isMember = this.subscribers.includes(a.id)
+              return html`
+                <div class="member-row">
+                  <div class="member-info">
+                    <span class="member-dot" style="background: ${a.avatarColor}"></span>
+                    <span class="member-name">${a.name}</span>
+                  </div>
+                  <button class="toggle ${isMember ? 'on' : ''}" @click=${() => this.handleToggleMember(a.id)}></button>
+                </div>
+              `
+            })}
+            ${this.agents.length === 0 ? html`<p class="placeholder">No agents created yet</p>` : ''}
+          </div>
+
+          <div class="section-card">
+            <div class="section-title">Created</div>
+            <p class="created-text">${this.formatDate(ch.createdAt)}</p>
+          </div>
+        </div>
+
+        <div class="actions-row">
+          <button class="action-btn danger" @click=${this.handleDelete}>Delete channel</button>
+        </div>
+      </div>
+    `
 
     return html`
       <div class="backdrop" @click=${this.handleBackdropClick}>
-        <div class="modal">
-          <div class="modal-header">
-            <div class="channel-title">
-              <span class="hash">#</span>
-              ${this.editingName
-                ? html`<input class="name-input" .value=${ch.name} @blur=${this.saveName} @keydown=${this.handleNameKeydown}>`
-                : html`<span class="name" @click=${this.startEditName}>${ch.name}</span>`
-              }
-            </div>
-            <button class="close-btn" type="button" @click=${this.handleClose} aria-label="Close channel details">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M6 6l12 12M18 6L6 18" stroke-linecap="round"></path>
-              </svg>
-            </button>
+        ${inspectorResizable ? html`
+          <div class="sheet-shell">
+            <button
+              class="inspector-resizer ${this.inspectorResizeActive ? 'active' : ''}"
+              type="button"
+              role="separator"
+              aria-label="Resize inspector"
+              aria-orientation="vertical"
+              aria-valuemin=${String(INSPECTOR_MIN_WIDTH_PX)}
+              aria-valuemax=${String(inspectorWidthMax)}
+              aria-valuenow=${String(inspectorWidth)}
+              data-testid="channel-details-resizer"
+              @pointerdown=${this.handleInspectorResizePointerDown}
+              @keydown=${this.handleInspectorResizeKeydown}
+            ></button>
+            ${modal}
           </div>
-
-          <div class="tab-content">
-            <div class="section-card">
-              <div class="section-title">Description</div>
-              ${this.editingDesc
-                ? html`<textarea class="desc-input" .value=${ch.description || ''} @blur=${this.saveDesc} @keydown=${this.handleDescKeydown}></textarea>`
-                : ch.description
-                  ? html`<p class="section-content" @click=${this.startEditDesc}>${ch.description}</p>`
-                  : html`<p class="placeholder" @click=${this.startEditDesc}>Add a description...</p>`
-              }
-            </div>
-
-            <div class="section-card">
-              <div class="section-title">Members (${this.subscribers.length})</div>
-              ${this.agents.map(a => {
-                const isMember = this.subscribers.includes(a.id)
-                return html`
-                  <div class="member-row">
-                    <div class="member-info">
-                      <span class="member-dot" style="background: ${a.avatarColor}"></span>
-                      <span class="member-name">${a.name}</span>
-                    </div>
-                    <button class="toggle ${isMember ? 'on' : ''}" @click=${() => this.handleToggleMember(a.id)}></button>
-                  </div>
-                `
-              })}
-              ${this.agents.length === 0 ? html`<p class="placeholder">No agents created yet</p>` : ''}
-            </div>
-
-            <div class="section-card">
-              <div class="section-title">Created</div>
-              <p class="created-text">${this.formatDate(ch.createdAt)}</p>
-            </div>
-          </div>
-
-          <div class="actions-row">
-            <button class="action-btn danger" @click=${this.handleDelete}>Delete channel</button>
-          </div>
-        </div>
+        ` : modal}
       </div>
     `
   }

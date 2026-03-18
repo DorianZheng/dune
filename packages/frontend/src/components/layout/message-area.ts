@@ -20,6 +20,7 @@ export class MessageArea extends LitElement {
   @property({ type: Array }) typingAgentIds: string[] = []
   @property({ type: Number }) subscriberCount = 0
   @property({ attribute: false }) selectedModelProvider: SelectedModelProvider | null = null
+  @property({ type: Boolean, reflect: true }) paneIntegrated = false
 
   @state() private mentionActive = false
   @state() private mentionFilter = ''
@@ -36,17 +37,23 @@ export class MessageArea extends LitElement {
       flex-direction: column;
       height: 100%;
       overflow: hidden;
-      background: var(--bg-primary);
+      background: transparent;
+      padding: 0;
+      gap: 0;
     }
 
     .header {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: var(--space-sm);
-      padding: 8px 10px;
-      background: var(--bg-primary);
-      min-height: var(--header-height);
+      gap: 12px;
+      padding: 14px 18px 10px;
+      min-height: 54px;
+      background: transparent;
+    }
+
+    :host([paneIntegrated]) .header {
+      display: none;
     }
 
     .header-main {
@@ -60,27 +67,27 @@ export class MessageArea extends LitElement {
     .header-left {
       display: flex;
       align-items: center;
-      gap: var(--space-sm);
+      gap: 14px;
       min-width: 0;
       cursor: pointer;
-      padding: 4px 6px;
-      border-radius: var(--radius-sm);
-      transition: background var(--transition-fast);
+      padding: 0;
+      border-radius: 0;
+      transition: color var(--transition-fast);
     }
 
     .header-left:hover {
-      background: var(--bg-hover);
+      color: var(--text-primary);
     }
 
     .channel-mark {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      width: 24px;
-      height: 24px;
-      border-radius: var(--radius-sm);
-      background: color-mix(in srgb, var(--accent-soft) 72%, var(--bg-elevated));
-      color: var(--accent);
+      width: 28px;
+      height: 28px;
+      border-radius: 10px;
+      background: color-mix(in srgb, var(--accent-soft) 70%, transparent);
+      color: color-mix(in srgb, var(--accent) 76%, var(--text-primary));
       font-size: 15px;
       font-weight: 600;
       flex-shrink: 0;
@@ -90,27 +97,36 @@ export class MessageArea extends LitElement {
       min-width: 0;
       display: flex;
       flex-direction: column;
-      gap: 1px;
+      gap: 4px;
+    }
+
+    .header-kicker {
+      font-size: 11px;
+      line-height: 1.2;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text-muted);
     }
 
     .header-name {
-      font-size: var(--text-title-size);
-      font-weight: 600;
+      font-size: 18px;
+      font-weight: 640;
       color: var(--text-primary);
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
-      line-height: 1.2;
+      line-height: 1.1;
+      letter-spacing: -0.02em;
     }
 
     .header-desc {
-      font-size: var(--text-meta-size);
-      color: var(--text-muted);
+      font-size: var(--text-secondary-size);
+      color: var(--text-secondary);
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
       min-width: 0;
-      line-height: 1.3;
+      line-height: 1.4;
     }
 
     .header-right {
@@ -121,10 +137,10 @@ export class MessageArea extends LitElement {
     }
 
     .members-btn {
-      border: none;
-      border-radius: var(--radius-sm);
-      height: var(--control-height);
-      background: var(--bg-subtle);
+      border: 1px solid transparent;
+      border-radius: 999px;
+      height: 30px;
+      background: color-mix(in srgb, var(--bg-hover) 82%, transparent);
       color: var(--text-secondary);
       display: inline-flex;
       align-items: center;
@@ -144,6 +160,7 @@ export class MessageArea extends LitElement {
 
     .members-btn:hover {
       background: var(--bg-hover);
+      border-color: var(--border-light);
       color: var(--text-primary);
       transform: none;
     }
@@ -160,30 +177,83 @@ export class MessageArea extends LitElement {
     .messages {
       flex: 1;
       overflow-y: auto;
-      padding: 8px 10px;
+      padding: 8px 18px 6px;
       background: transparent;
       display: flex;
       flex-direction: column;
-      gap: 2px;
       min-height: 0;
     }
 
+    .messages-lane {
+      width: min(var(--content-max-width), 100%);
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      padding: 0;
+    }
+
+    .prompt-bubble {
+      margin-left: auto;
+      max-width: min(62%, 520px);
+      padding: 10px 16px;
+      border-radius: 18px;
+      background: color-mix(in srgb, var(--bg-surface) 96%, transparent);
+      border: 1px solid var(--glass-border);
+      color: var(--text-primary);
+      font-size: 14px;
+      line-height: 1.45;
+      word-break: break-word;
+    }
+
     .empty {
-      margin: auto;
+      margin: 10vh auto 0;
       width: min(540px, 100%);
-      border-radius: var(--radius);
-      padding: var(--space-xl) var(--space-lg);
+      border-radius: 0;
+      padding: 0 16px;
       color: var(--text-secondary);
-      font-size: 15px;
+      font-size: 14px;
       text-align: center;
-      background: var(--bg-surface);
+      background: transparent;
+      border: none;
+    }
+
+    .new-thread-empty {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+
+    .new-thread-copy {
+      width: min(440px, 100%);
+      display: grid;
+      gap: 10px;
+      text-align: center;
+    }
+
+    .new-thread-title {
+      font-size: clamp(26px, 3vw, 38px);
+      line-height: 1.05;
+      letter-spacing: -0.04em;
+      font-weight: 680;
+      color: var(--text-primary);
+    }
+
+    .new-thread-desc {
+      font-size: 14px;
+      line-height: 1.5;
+      color: var(--text-secondary);
     }
 
     .typing {
-      padding: 0 10px 5px;
+      width: min(var(--content-max-width), 100%);
+      margin: 0 auto;
+      padding: 0 18px 2px;
       font-size: var(--text-meta-size);
       color: var(--text-muted);
-      min-height: 20px;
+      min-height: 18px;
       line-height: 1.4;
     }
 
@@ -192,15 +262,16 @@ export class MessageArea extends LitElement {
     }
 
     .input-area {
-      padding: 4px 0 6px;
-      background: var(--bg-primary);
+      padding: 6px 12px 8px;
+      background: var(--dock-bg);
+      flex-shrink: 0;
     }
 
     .input-guard {
-      width: var(--composer-main-ratio);
-      margin: 0 auto 8px;
-      border-radius: var(--radius-sm);
-      background: color-mix(in srgb, var(--warning) 10%, var(--bg-surface));
+      width: min(calc(var(--content-max-width) + 24px), 100%);
+      margin: 0 auto 6px;
+      border-radius: 12px;
+      background: color-mix(in srgb, var(--warning) 10%, var(--dock-bg));
       color: var(--text-primary);
       padding: 10px 12px;
       display: flex;
@@ -208,6 +279,7 @@ export class MessageArea extends LitElement {
       justify-content: space-between;
       gap: 10px;
       flex-wrap: wrap;
+      border: 1px solid var(--dock-border);
     }
 
     .input-guard-copy {
@@ -229,58 +301,51 @@ export class MessageArea extends LitElement {
 
     .composer-shell {
       position: relative;
-      width: var(--composer-main-ratio);
-      margin-inline: auto;
+      width: min(calc(var(--content-max-width) + 24px), 100%);
+      margin: 0 auto;
     }
 
     @media (max-width: 1024px) {
-      .header,
-      .messages,
-      .typing {
-        padding-left: 10px;
-        padding-right: 10px;
+      .messages {
+        padding: 8px 14px 6px;
+      }
+
+      .input-area {
+        padding: 6px 12px 8px;
       }
     }
 
     @media (max-width: 760px) {
       .header {
-        min-height: var(--header-height);
-        padding-top: 8px;
-        padding-bottom: 8px;
+        min-height: auto;
+        padding: 12px 14px 8px;
       }
 
       .channel-mark {
-        width: 24px;
-        height: 24px;
-        border-radius: 8px;
+        width: 26px;
+        height: 26px;
+        border-radius: 12px;
       }
 
       .header-name {
-        font-size: 15px;
+        font-size: 18px;
       }
 
-      .header-desc {
-        font-size: 11px;
-      }
-
+      .header-desc,
       .members-btn span:last-child {
         min-width: 12px;
       }
 
-      .messages {
-        padding-top: 6px;
-      }
-
-      .input-area {
-        padding-bottom: 6px;
+      .messages-lane {
+        gap: 6px;
       }
 
       .composer-shell {
-        width: calc(100% - 20px);
+        width: 100%;
       }
 
       .input-guard {
-        width: calc(100% - 20px);
+        width: 100%;
       }
     }
 
@@ -416,7 +481,14 @@ export class MessageArea extends LitElement {
 
   render() {
     if (!this.channel) {
-      return html`<div class="messages"><p class="empty">Select or create a channel to start collaborating.</p></div>`
+      return html`
+        <div class="new-thread-empty">
+          <div class="new-thread-copy">
+            <p class="new-thread-title">Start a new thread</p>
+            <p class="new-thread-desc">Select a channel from the sidebar or create one to start collaborating.</p>
+          </div>
+        </div>
+      `
     }
 
     const typingNames = this.typingAgentIds.map(id => this.getAgentName(id))
@@ -425,45 +497,54 @@ export class MessageArea extends LitElement {
       : ''
 
     return html`
-      <div class="header">
-        <div class="header-main">
-          <div class="header-left" @click=${this.handleOpenDetails}>
-            <span class="channel-mark" aria-hidden="true">#</span>
-            <div class="header-titles">
-              <span class="header-name">${this.channel.name}</span>
-              ${this.channel.description
-                ? html`<span class="header-desc">${this.channel.description}</span>`
-                : html`<span class="header-desc">No description yet. Click to add one.</span>`}
+      ${this.paneIntegrated
+        ? ''
+        : html`
+          <div class="header">
+            <div class="header-main">
+              <div class="header-left" @click=${this.handleOpenDetails}>
+                <span class="channel-mark" aria-hidden="true">#</span>
+                <div class="header-titles">
+                  <span class="header-kicker">Channel</span>
+                  <span class="header-name">${this.channel.name}</span>
+                  ${this.channel.description
+                    ? html`<span class="header-desc">${this.channel.description}</span>`
+                    : html`<span class="header-desc">No description yet. Click to add one.</span>`}
+                </div>
+              </div>
+            </div>
+            <div class="header-right">
+              <button class="members-btn" type="button" title="Manage members" @click=${this.handleManageMembers}>
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M20 21a8 8 0 0 0-16 0M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm7-6.5a3.5 3.5 0 0 1 0 7" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <span>${this.subscriberCount}</span>
+              </button>
             </div>
           </div>
-        </div>
-        <div class="header-right">
-          <button class="members-btn" type="button" title="Manage members" @click=${this.handleManageMembers}>
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M20 21a8 8 0 0 0-16 0M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm7-6.5a3.5 3.5 0 0 1 0 7" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-            <span>${this.subscriberCount}</span>
-          </button>
-        </div>
-      </div>
+        `}
 
       <div class="messages">
-        ${this.messages.length === 0
-          ? html`<p class="empty">No messages yet. Start with a clear prompt so agents can coordinate effectively.</p>`
-          : this.messages.map(m => html`
-            <message-item
-              class=${m.authorId === 'system' ? 'system' : ''}
-              .message=${m}
-              .agentName=${this.getAgentName(m.authorId)}
-              .agentColor=${this.getAgentColor(m.authorId)}
-            ></message-item>
-          `)
-        }
+        <div class="messages-lane" data-testid="messages-lane">
+          ${this.messages.length === 0
+            ? html`<p class="empty">No messages yet. Start with a clear prompt so agents can coordinate effectively.</p>`
+            : this.messages.map((m) => m.authorId === 'admin'
+              ? html`<div class="prompt-bubble">${m.content}</div>`
+              : html`
+                  <message-item
+                    class=${m.authorId === 'system' ? 'system' : ''}
+                    .message=${m}
+                    .agentName=${this.getAgentName(m.authorId)}
+                    .agentColor=${this.getAgentColor(m.authorId)}
+                  ></message-item>
+                `)
+          }
+        </div>
       </div>
 
       <div class="typing ${typingText ? 'typing-active' : ''}">${typingText}</div>
 
-      <div class="input-area">
+      <div class="input-area" data-testid="composer-dock">
         ${this.showModelSelectionPrompt
           ? html`
               <div class="input-guard" role="status" aria-live="polite">

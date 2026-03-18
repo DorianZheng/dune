@@ -3,7 +3,7 @@ import { MessageSchema } from './message.js'
 import { AgentStatus } from './agent.js'
 import { AgentLogEntrySchema } from './agent-log.js'
 import { TodoSchema } from './todo.js'
-import { HostCommandRequestSchema } from './host-command.js'
+import { HostOperatorRequestSchema } from './host-operator.js'
 
 export const WsMessageNew = Type.Object({
   type: Type.Literal('message:new'),
@@ -87,14 +87,14 @@ export const WsWorkspaceInvalidate = Type.Object({
   }),
 })
 
-export const WsHostCommandPending = Type.Object({
-  type: Type.Literal('host-command:pending'),
-  payload: HostCommandRequestSchema,
+export const WsHostOperatorPending = Type.Object({
+  type: Type.Literal('host-operator:pending'),
+  payload: HostOperatorRequestSchema,
 })
 
-export const WsHostCommandUpdated = Type.Object({
-  type: Type.Literal('host-command:updated'),
-  payload: HostCommandRequestSchema,
+export const WsHostOperatorUpdated = Type.Object({
+  type: Type.Literal('host-operator:updated'),
+  payload: HostOperatorRequestSchema,
 })
 
 export const WsEvent = Type.Union([
@@ -107,7 +107,7 @@ export const WsEvent = Type.Union([
   WsTodoChange,
   WsTodoDelete,
   WsWorkspaceInvalidate,
-  WsHostCommandPending,
-  WsHostCommandUpdated,
+  WsHostOperatorPending,
+  WsHostOperatorUpdated,
 ])
 export type WsEventType = Static<typeof WsEvent>

@@ -1,7 +1,7 @@
-import { LitElement, html, css } from 'lit'
+import { LitElement, css, html } from 'lit'
 import { customElement, property, state as litState } from 'lit/decorators.js'
 import { ifDefined } from 'lit/directives/if-defined.js'
-import type { Channel, Agent } from '@dune/shared'
+import type { Agent, Channel } from '@dune/shared'
 
 export type NavRow = {
   kind: 'channel' | 'agent'
@@ -22,6 +22,7 @@ export class SidebarPanel extends LitElement {
   @property() selectedAgentId = ''
   @property() activeSurface: 'chat' | 'settings' | 'sandboxes' | 'apps' = 'chat'
   @property({ type: Boolean }) collapsed = false
+  @property({ type: Boolean }) nativeTrafficLights = false
   @litState() private contextMenu: { x: number; y: number; channelId: string } | null = null
 
   static styles = css`
@@ -45,11 +46,15 @@ export class SidebarPanel extends LitElement {
       min-height: var(--header-height);
     }
 
+    .workspace.native-traffic-lights {
+      padding-left: calc(var(--toolbar-safe-left) - 8px);
+    }
+
     .workspace-head {
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      gap: 10px;
+      justify-content: flex-end;
+      gap: 0;
       min-height: var(--control-height);
       min-width: 0;
     }
@@ -651,13 +656,16 @@ export class SidebarPanel extends LitElement {
 
     return html`
       <div class="shell ${this.collapsed ? 'collapsed' : ''}">
-        <div class="workspace">
-          <div class="workspace-head style-${workspaceStyle}">
-            <div class="workspace-brand style-${workspaceStyle}">
-              <span class="workspace-brand-mark" aria-hidden="true"></span>
-              <span class="workspace-brand-text">Dune</span>
-            </div>
-            <button class="sidebar-toggle" type="button" title="Toggle sidebar" @click=${this.toggleSidebar}>
+        <div class="workspace ${this.nativeTrafficLights ? 'native-traffic-lights' : ''}">
+          <div class="workspace-head style-${workspaceStyle}" data-testid="sidebar-header">
+            <button
+              class="sidebar-toggle"
+              type="button"
+              title="Toggle sidebar"
+              aria-label="Toggle sidebar"
+              data-testid="sidebar-toggle"
+              @click=${this.toggleSidebar}
+            >
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M4 5h16v14H4zM9 5v14" stroke-linejoin="round"></path>
               </svg>
@@ -736,7 +744,7 @@ export class SidebarPanel extends LitElement {
               <path d="M12.22 2h-.44a2 2 0 0 0-1.94 1.5l-.26 1.05a2 2 0 0 1-2.11 1.5l-1.09-.06A2 2 0 0 0 4.5 8.22l.53.95a2 2 0 0 1 0 2.16l-.53.95a2 2 0 0 0 1.88 2.93l1.09-.06a2 2 0 0 1 2.11 1.5l.26 1.05A2 2 0 0 0 11.78 20h.44a2 2 0 0 0 1.94-1.5l.26-1.05a2 2 0 0 1 2.11-1.5l1.09.06a2 2 0 0 0 1.88-2.93l-.53-.95a2 2 0 0 1 0-2.16l.53-.95a2 2 0 0 0-1.88-2.93l-1.09.06a2 2 0 0 1-2.11-1.5l-.26-1.05A2 2 0 0 0 12.22 2Z" stroke-linecap="round" stroke-linejoin="round"></path>
               <circle cx="12" cy="12" r="3"></circle>
             </svg>
-          `, () => this.dispatchEvent(new CustomEvent('open-settings', { bubbles: true, composed: true })))}
+          `, () => this.dispatchEvent(new CustomEvent('open-settings', { bubbles: true, composed: true })), this.activeSurface === 'settings', 'nav-settings')}
         </div>
       </div>
 

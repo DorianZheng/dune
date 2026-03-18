@@ -3,8 +3,12 @@ import { customElement, property, state as litState, query } from 'lit/decorator
 import { unsafeHTML } from 'lit/directives/unsafe-html.js'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
+import { nanoid } from 'nanoid'
 import type { Agent, AgentLogEntry, MemoryFile, SelectedModelProvider } from '@dune/shared'
 import * as api from '../../services/api-client.js'
+import { highlightCodeBlocks } from '../../utils/shiki-highlighter.js'
+import { renderMathBlocks } from '../../utils/katex-renderer.js'
+import { renderMermaidBlocks } from '../../utils/mermaid-renderer.js'
 import { uiPreferences } from '../../state/ui-preferences.js'
 import '../layout/codex-composer.js'
 import type {
@@ -41,7 +45,21 @@ const AGENT_COMPOSER_ADD_ACTIONS: CodexComposerAddAction[] = [
 
 type MemorySort = 'name' | 'updated' | 'size'
 type MemoryPane = 'files' | 'editor'
-type HostExecApprovalMode = Agent['hostExecApprovalMode']
+type HostExecApprovalMode = Agent['hostOperatorApprovalMode']
+type StashItemState = 'stashed' | 'queued' | 'error'
+type SendDmRequest = (
+  agentId: string,
+  content: string,
+  options?: { clientRequestId?: string; optimisticStatus?: boolean },
+) => Promise<void>
+type StashItem = {
+  clientRequestId: string
+  content: string
+  state: StashItemState
+  createdAt: number
+  queuedAt: number | null
+  errorMessage: string | null
+}
 
 const DEFAULT_MEMORY_FILES_WIDTH_PX = 280
 const MEMORY_FILES_MIN_WIDTH_PX = 220
@@ -55,6 +73,7 @@ const HOST_EXEC_APPROVAL_OPTIONS: Array<{ value: HostExecApprovalMode; label: st
   { value: 'approval-required', label: 'Require approval' },
   { value: 'dangerously-skip', label: 'Dangerously skip permissions' },
 ]
+const newClientRequestId = () => nanoid(12)
 
 type AgentViewSnapshot = {
   memoryOpen: boolean
@@ -69,13 +88,17 @@ type AgentViewSnapshot = {
   memoryCreating: boolean
   memoryNewFileName: string
   memoryDeleteConfirm: string | null
+  stashItems: StashItem[]
 }
+const agentViewById = new Map<string, AgentViewSnapshot>()
 
 @customElement('agent-chat-view')
 export class AgentChatView extends LitElement {
   @property({ type: Object }) agent!: Agent
   @property({ type: Array }) entries: AgentLogEntry[] = []
   @property({ attribute: false }) selectedModelProvider: SelectedModelProvider | null = null
+  @property({ attribute: false }) sendDmRequest: SendDmRequest | null = null
+  @property({ type: Boolean, reflect: true }) paneIntegrated = false
   @litState() private expandedIds = new Set<string>()
   @litState() private sending = false
   @litState() private showModelSelectionPrompt = false
@@ -99,12 +122,20 @@ export class AgentChatView extends LitElement {
   @litState() private hostExecApprovalConfirmOpen = false
   @litState() private hostExecApprovalDraft: HostExecApprovalMode | null = null
   @litState() private hostExecApprovalSaving = false
+  @litState() private hostSettingsOpen = false
+  @litState() private hostSettingsSaving = false
+  @litState() private hostAppsDraft: string[] = []
+  @litState() private hostPathsDraft: string[] = []
+  @litState() private hostNewApp = ''
+  @litState() private hostRunningApps: Array<{ bundleId: string; appName: string; pid: number; active: boolean }> = []
+  @litState() private hostRunningAppsLoading = false
+  @litState() private hostAppSearchFocused = false
+  @litState() private stashItems: StashItem[] = []
 
   @query('.conversation') private scrollContainer!: HTMLElement
   @query('codex-composer') private composerEl!: CodexComposer
   private userScrolledUp = false
   private previousAgentId: string | null = null
-  private readonly viewByAgentId = new Map<string, AgentViewSnapshot>()
   private memoryResizePointerId: number | null = null
   private memoryResizeStartX = 0
   private memoryResizeStartWidth = DEFAULT_MEMORY_FILES_WIDTH_PX
@@ -115,64 +146,87 @@ export class AgentChatView extends LitElement {
       display: flex;
       flex-direction: column;
       height: 100%;
-      background: var(--bg-elevated);
+      background: transparent;
       position: relative;
+      padding: 0;
+      gap: 0;
     }
 
     /* ── Header ── */
     .header {
       display: flex;
       align-items: center;
-      padding: 8px 10px;
-      border-bottom: none;
-      background: var(--bg-primary);
-      min-height: var(--header-height);
-      gap: 10px;
+      padding: 10px 16px 8px;
+      background: transparent;
+      min-height: 54px;
+      gap: 14px;
       flex-shrink: 0;
     }
 
     .header-main {
       display: flex;
       align-items: center;
-      gap: var(--space-sm);
+      gap: 14px;
       min-width: 0;
       flex: 1;
     }
     .header-avatar {
-      width: var(--control-height);
-      height: var(--control-height);
-      border-radius: var(--radius-sm);
+      width: 32px;
+      height: 32px;
+      border-radius: 10px;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: var(--text-secondary-size);
+      font-size: 15px;
       font-weight: 600;
       color: white;
       cursor: pointer;
       flex-shrink: 0;
       transition: transform var(--transition-fast), filter var(--transition-fast);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28);
     }
     .header-avatar:hover {
-      transform: none;
+      transform: translateY(-1px);
       filter: brightness(0.96);
     }
+
     .header-info {
       flex: 1;
       min-width: 0;
+      display: grid;
+      gap: 4px;
     }
-    .header-name {
-      font-size: var(--text-title-size);
-      font-weight: 600;
-      color: var(--text-primary);
+
+    .header-kicker {
+      font-size: 11px;
       line-height: 1.2;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text-muted);
     }
+
+    .header-name {
+      font-size: 18px;
+      font-weight: 640;
+      color: var(--text-primary);
+      line-height: 1.1;
+      letter-spacing: -0.02em;
+    }
+
+    .header-name.profile-trigger {
+      cursor: pointer;
+    }
+
+    .header-name.profile-trigger:hover {
+      color: var(--accent);
+    }
+
     .header-status {
       display: inline-flex;
       align-items: center;
-      gap: 5px;
+      gap: 6px;
       font-size: 12px;
-      color: var(--text-muted);
-      margin-top: 1px;
+      color: var(--text-secondary);
     }
     .status-dot {
       width: 8px;
@@ -191,26 +245,32 @@ export class AgentChatView extends LitElement {
     .conversation {
       flex: 1;
       overflow-y: auto;
-      padding: 8px 0;
+      padding: 4px 18px 6px;
       min-height: 0;
+    }
+    .conversation-lane {
+      width: min(var(--content-max-width), 100%);
+      margin: 0 auto;
     }
     .empty-state {
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      height: 100%;
+      min-height: 40vh;
       gap: 12px;
       color: var(--text-muted);
+      border: none;
+      background: transparent;
     }
     .empty-avatar {
-      width: 56px;
-      height: 56px;
-      border-radius: var(--radius);
+      width: 44px;
+      height: 44px;
+      border-radius: 12px;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 28px;
+      font-size: 20px;
       font-weight: 600;
       color: white;
     }
@@ -234,8 +294,8 @@ export class AgentChatView extends LitElement {
     }
     .system-pill {
       background: color-mix(in srgb, var(--bg-hover) 84%, white 16%);
-      border-radius: 999px;
-      border: none;
+      border-radius: 10px;
+      border: 1px solid var(--border-color);
       padding: 4px 12px;
       font-size: 12px;
       color: var(--text-muted);
@@ -362,8 +422,8 @@ export class AgentChatView extends LitElement {
       padding: 4px 12px 4px 48px;
     }
     .tool-card {
-      border-radius: var(--radius);
-      border: none;
+      border-radius: 12px;
+      border: 1px solid var(--border-color);
       overflow: hidden;
       max-width: 720px;
       background: var(--bg-surface);
@@ -471,8 +531,8 @@ export class AgentChatView extends LitElement {
       align-items: center;
       gap: 4px;
       font-size: 12px;
-      border: none;
-      border-radius: 999px;
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
       padding: 4px 9px;
       background: var(--bg-hover);
     }
@@ -682,16 +742,116 @@ export class AgentChatView extends LitElement {
 
     /* ── Input area ── */
     .input-area {
-      padding: 4px 0 6px;
+      padding: 6px 12px 8px;
       flex-shrink: 0;
-      background: var(--bg-primary);
+      background: var(--dock-bg);
+    }
+
+    .stash-strip {
+      width: min(var(--content-max-width), 100%);
+      margin: 0 auto 8px;
+      display: grid;
+      gap: 6px;
+    }
+
+    .stash-row {
+      border-radius: 10px;
+      border: 1px solid color-mix(in srgb, var(--border-primary) 72%, transparent);
+      background: color-mix(in srgb, var(--bg-surface) 96%, transparent);
+      padding: 9px 11px;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .stash-row.queued {
+      background: color-mix(in srgb, var(--accent-soft) 58%, var(--bg-surface));
+    }
+
+    .stash-row.error {
+      background: color-mix(in srgb, var(--error) 9%, var(--bg-surface));
+      border-color: color-mix(in srgb, var(--error) 28%, transparent);
+    }
+
+    .stash-copy {
+      min-width: 0;
+      flex: 1;
+      display: grid;
+      gap: 4px;
+    }
+
+    .stash-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .stash-label {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+    }
+
+    .stash-state {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-secondary);
+    }
+
+    .stash-content {
+      font-size: 13px;
+      line-height: 1.5;
+      color: var(--text-primary);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .stash-error {
+      font-size: 12px;
+      color: var(--error);
+    }
+
+    .stash-action {
+      border: 1px solid var(--control-border);
+      border-radius: 10px;
+      min-height: var(--control-height);
+      padding: 0 10px;
+      background: var(--control-bg);
+      color: var(--text-primary);
+      font-size: 11.5px;
+      font-weight: 700;
+      white-space: nowrap;
+      flex-shrink: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .stash-action:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .stash-action:not(:disabled):hover {
+      background: var(--control-bg-hover);
+      border-color: var(--border-primary);
+      color: var(--text-primary);
+    }
+
+    .stash-action.passive {
+      opacity: 0.72;
+      cursor: default;
     }
 
     .input-guard {
-      width: var(--composer-main-ratio);
-      margin: 0 auto 8px;
-      border-radius: var(--radius-sm);
-      background: color-mix(in srgb, var(--warning) 10%, var(--bg-surface));
+      width: min(calc(var(--content-max-width) + 24px), 100%);
+      margin: 0 auto 6px;
+      border-radius: 12px;
+      background: color-mix(in srgb, var(--warning) 10%, var(--dock-bg));
       color: var(--text-primary);
       padding: 10px 12px;
       display: flex;
@@ -699,6 +859,7 @@ export class AgentChatView extends LitElement {
       justify-content: space-between;
       gap: 10px;
       flex-wrap: wrap;
+      border: 1px solid var(--dock-border);
     }
 
     .input-guard-copy {
@@ -708,11 +869,11 @@ export class AgentChatView extends LitElement {
     }
 
     .input-guard-btn {
-      border: none;
-      border-radius: var(--radius-sm);
-      min-height: 30px;
+      border: 1px solid var(--control-border);
+      border-radius: 10px;
+      min-height: var(--control-height);
       padding: 0 10px;
-      background: var(--bg-hover);
+      background: var(--control-bg);
       color: var(--text-primary);
       font-size: var(--text-secondary-size);
       font-weight: 600;
@@ -720,18 +881,18 @@ export class AgentChatView extends LitElement {
 
     .composer-shell {
       position: relative;
-      width: var(--composer-main-ratio);
+      width: min(calc(var(--content-max-width) + 24px), 100%);
       margin-inline: auto;
     }
 
     .composer-aux-btn {
-      border: none;
+      border: 1px solid var(--control-border);
       border-radius: 999px;
-      background: var(--bg-surface);
+      background: var(--control-bg);
       color: var(--text-secondary);
-      font-size: var(--text-meta-size);
-      padding: 7px 11px;
-      min-height: var(--composer-submit-size);
+      font-size: 11px;
+      padding: 0 10px;
+      min-height: var(--control-height);
       line-height: 1;
       cursor: pointer;
       transition: background var(--transition-fast), color var(--transition-fast);
@@ -740,7 +901,8 @@ export class AgentChatView extends LitElement {
     }
 
     .composer-aux-btn:hover {
-      background: var(--bg-hover);
+      background: var(--control-bg-hover);
+      border-color: var(--border-primary);
       color: var(--text-primary);
     }
 
@@ -760,112 +922,263 @@ export class AgentChatView extends LitElement {
       background: color-mix(in srgb, var(--error) 12%, transparent);
     }
 
-    .composer-aux-select-wrap {
-      display: inline-flex;
-      align-items: center;
-      min-height: var(--composer-submit-size);
-    }
-
-    .composer-aux-select {
-      border: none;
-      border-radius: 999px;
-      background: var(--bg-surface);
-      color: var(--text-secondary);
-      font-size: var(--text-meta-size);
-      padding: 7px 32px 7px 11px;
-      min-height: var(--composer-submit-size);
-      line-height: 1;
-      cursor: pointer;
-      font-weight: 600;
-      appearance: none;
-      background-image:
-        linear-gradient(45deg, transparent 50%, var(--text-muted) 50%),
-        linear-gradient(135deg, var(--text-muted) 50%, transparent 50%);
-      background-position:
-        calc(100% - 18px) calc(50% - 2px),
-        calc(100% - 13px) calc(50% - 2px);
-      background-size: 5px 5px, 5px 5px;
-      background-repeat: no-repeat;
-      transition: background-color var(--transition-fast), color var(--transition-fast);
-    }
-
-    .composer-aux-select:hover {
-      background-color: var(--bg-hover);
+    .host-settings-select {
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      background: var(--bg-primary);
       color: var(--text-primary);
+      font-size: 12px;
+      font-weight: 600;
+      padding: 8px 10px;
+      cursor: pointer;
     }
 
-    .composer-aux-select:disabled {
-      cursor: wait;
-      opacity: 0.72;
+    .host-settings-danger-confirm {
+      display: grid;
+      gap: 8px;
+      margin-top: 4px;
+      padding: 10px;
+      border-radius: 12px;
+      background: color-mix(in srgb, var(--error) 6%, var(--bg-surface));
+      border: 1px solid color-mix(in srgb, var(--error) 18%, transparent);
+      min-width: 0;
     }
 
-    .composer-aux-select:focus-visible {
-      outline: 2px solid var(--accent);
-      outline-offset: 2px;
+    .host-settings-danger-confirm .host-settings-help {
+      color: var(--text-secondary);
     }
 
-    .host-exec-policy-popover {
+    .host-settings-danger-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+
+    .host-settings-popover {
       position: absolute;
       right: 0;
+      left: 0;
       bottom: calc(100% + 8px);
-      z-index: 80;
-      width: min(360px, 100%);
+      z-index: 82;
+      max-width: 420px;
+      margin-inline: auto;
+      max-height: min(70vh, 520px);
+      overflow-x: hidden;
+      overflow-y: auto;
       border-radius: 16px;
       border: 1px solid var(--border-subtle);
       background: var(--bg-elevated);
       box-shadow: var(--shadow-md);
       padding: 14px;
       display: grid;
-      gap: 10px;
+      gap: 12px;
     }
 
-    .host-exec-policy-title {
+    .host-settings-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .host-settings-title {
       font-size: 13px;
       font-weight: 700;
       color: var(--text-primary);
     }
 
-    .host-exec-policy-copy {
+    .host-settings-section {
+      display: grid;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .host-settings-label {
       font-size: 12px;
-      line-height: 1.45;
+      font-weight: 600;
       color: var(--text-secondary);
     }
 
-    .host-exec-policy-actions {
+    .host-settings-help {
+      font-size: 11px;
+      color: var(--text-muted);
+      line-height: 1.45;
+      overflow-wrap: break-word;
+      word-break: break-word;
+    }
+
+    .host-settings-list {
+      display: grid;
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .host-settings-chip {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      border-radius: 12px;
+      background: var(--bg-surface);
+      padding: 8px 10px;
+      font-size: 12px;
+      color: var(--text-primary);
+      min-width: 0;
+    }
+
+    .host-settings-chip span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      min-width: 0;
+    }
+
+    .host-settings-chip button {
+      flex-shrink: 0;
+    }
+
+    .host-settings-chip button,
+    .host-settings-header button,
+    .host-settings-row button,
+    .host-settings-actions button {
+      border: none;
+      border-radius: 999px;
+      background: var(--bg-hover);
+      color: var(--text-primary);
+      font-size: 12px;
+      font-weight: 600;
+      padding: 7px 10px;
+      cursor: pointer;
+    }
+
+    .host-settings-row {
+      display: flex;
+      gap: 8px;
+    }
+
+    .host-settings-row input {
+      flex: 1;
+      min-width: 0;
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      font-size: 12px;
+      padding: 8px 10px;
+    }
+
+    .host-app-search {
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      font-size: 12px;
+      padding: 8px 10px;
+    }
+
+    .host-app-search::placeholder {
+      color: var(--text-muted);
+    }
+
+    .host-app-results {
+      max-height: 180px;
+      overflow-y: auto;
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      background: var(--bg-primary);
+    }
+
+    .host-app-result-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 8px 10px;
+      cursor: pointer;
+      transition: background var(--transition-fast);
+      min-width: 0;
+    }
+
+    .host-app-result-item:not(:last-child) {
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .host-app-result-item:hover {
+      background: var(--bg-hover);
+    }
+
+    .host-app-result-item.added {
+      opacity: 0.5;
+      cursor: default;
+    }
+
+    .host-app-result-info {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+      min-width: 0;
+    }
+
+    .host-app-result-name {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-primary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .host-app-result-bundle {
+      font-size: 11px;
+      color: var(--text-muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .host-app-result-badge {
+      font-size: 11px;
+      color: var(--text-muted);
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .host-app-empty {
+      padding: 12px 10px;
+      font-size: 12px;
+      color: var(--text-muted);
+      text-align: center;
+    }
+
+    .host-app-add-manual {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      cursor: pointer;
+      transition: background var(--transition-fast);
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .host-app-add-manual:hover {
+      background: var(--bg-hover);
+    }
+
+    .host-settings-actions {
       display: flex;
       justify-content: flex-end;
       gap: 8px;
     }
 
-    .host-exec-policy-btn {
-      border: none;
-      border-radius: 999px;
-      background: var(--bg-surface);
-      color: var(--text-secondary);
-      font-size: 12px;
-      font-weight: 600;
-      padding: 8px 12px;
-      cursor: pointer;
-      transition: background var(--transition-fast), color var(--transition-fast);
-    }
-
-    .host-exec-policy-btn:hover {
-      background: var(--bg-hover);
-      color: var(--text-primary);
-    }
-
-    .host-exec-policy-btn.primary {
-      background: color-mix(in srgb, var(--error) 14%, var(--bg-surface));
-      color: var(--error);
-    }
-
-    .host-exec-policy-btn.primary:hover {
-      background: color-mix(in srgb, var(--error) 20%, var(--bg-surface));
-    }
-
-    .host-exec-policy-btn:disabled {
-      cursor: wait;
-      opacity: 0.72;
+    .host-settings-actions .primary {
+      background: var(--accent);
+      color: #fff;
     }
 
     .mount-popover {
@@ -1410,7 +1723,19 @@ export class AgentChatView extends LitElement {
 
     @media (max-width: 760px) {
       .input-area {
-        padding-bottom: 6px;
+        padding-bottom: 8px;
+      }
+
+      .stash-strip {
+        width: calc(100% - 20px);
+      }
+
+      .stash-row {
+        flex-direction: column;
+      }
+
+      .stash-action {
+        align-self: flex-start;
       }
 
       .composer-shell {
@@ -1446,6 +1771,7 @@ export class AgentChatView extends LitElement {
       memoryCreating: false,
       memoryNewFileName: '',
       memoryDeleteConfirm: null,
+      stashItems: [],
     }
   }
 
@@ -1463,6 +1789,7 @@ export class AgentChatView extends LitElement {
       memoryCreating: this.memoryCreating,
       memoryNewFileName: this.memoryNewFileName,
       memoryDeleteConfirm: this.memoryDeleteConfirm,
+      stashItems: this.stashItems.map((item) => ({ ...item })),
     }
   }
 
@@ -1484,17 +1811,18 @@ export class AgentChatView extends LitElement {
     this.memoryCreating = snapshot.memoryCreating
     this.memoryNewFileName = snapshot.memoryNewFileName
     this.memoryDeleteConfirm = normalizedDeleteConfirm
+    this.stashItems = snapshot.stashItems.map((item) => ({ ...item }))
     this.memoryLoading = false
     this.memoryFileLoading = false
     this.memorySaving = false
   }
 
   private persistAgentView(agentId: string) {
-    this.viewByAgentId.set(agentId, this.captureViewSnapshot())
+    agentViewById.set(agentId, this.captureViewSnapshot())
   }
 
   private restoreAgentView(agentId: string) {
-    const existing = this.viewByAgentId.get(agentId)
+    const existing = agentViewById.get(agentId)
     if (existing) {
       this.applyViewSnapshot(existing)
       return
@@ -1508,6 +1836,14 @@ export class AgentChatView extends LitElement {
   connectedCallback() {
     super.connectedCallback()
     window.addEventListener('pointerdown', this.handleWindowPointerDown, { capture: true })
+  }
+
+  protected override updated(): void {
+    if (this.shadowRoot) {
+      highlightCodeBlocks(this.shadowRoot)
+      renderMathBlocks(this.shadowRoot)
+      renderMermaidBlocks(this.shadowRoot)
+    }
   }
 
   disconnectedCallback() {
@@ -1633,11 +1969,23 @@ export class AgentChatView extends LitElement {
     const previousAgent = changed.get('agent') as Agent | undefined
     if (
       previousAgent?.id !== this.agent?.id
-      || previousAgent?.hostExecApprovalMode !== this.agent?.hostExecApprovalMode
+      || previousAgent?.hostOperatorApprovalMode !== this.agent?.hostOperatorApprovalMode
     ) {
       this.hostExecApprovalConfirmOpen = false
       this.hostExecApprovalDraft = null
       this.hostExecApprovalSaving = false
+    }
+
+    if (
+      previousAgent?.id !== this.agent?.id
+      || JSON.stringify(previousAgent?.hostOperatorApps || []) !== JSON.stringify(this.agent?.hostOperatorApps || [])
+      || JSON.stringify(previousAgent?.hostOperatorPaths || []) !== JSON.stringify(this.agent?.hostOperatorPaths || [])
+    ) {
+      this.hostSettingsSaving = false
+      this.hostSettingsOpen = false
+      this.hostAppsDraft = [...(this.agent?.hostOperatorApps || [])]
+      this.hostPathsDraft = [...(this.agent?.hostOperatorPaths || [])]
+      this.hostNewApp = ''
     }
 
     if (this.memoryResizeActive) {
@@ -1698,13 +2046,182 @@ export class AgentChatView extends LitElement {
     if (changed.has('selectedModelProvider') && this.selectedModelProvider) {
       this.showModelSelectionPrompt = false
     }
+    if (changed.has('entries')) {
+      this.syncStashItemsWithDeliveredMessages()
+    }
+    if (changed.has('agent')) {
+      this.maybeAutoFlushStash(changed.get('agent') as Agent | undefined)
+    }
+  }
+
+  private syncStashItemsWithDeliveredMessages() {
+    if (this.stashItems.length === 0) return
+    const deliveredIds = new Set<string>()
+    for (const entry of this.entries) {
+      if (entry.type !== 'user_message') continue
+      const clientRequestId = (entry.data as Record<string, unknown>).clientRequestId
+      if (typeof clientRequestId === 'string' && clientRequestId.trim()) {
+        deliveredIds.add(clientRequestId.trim())
+      }
+    }
+    if (deliveredIds.size === 0) return
+
+    const nextItems = this.stashItems.filter((item) => !deliveredIds.has(item.clientRequestId))
+    if (nextItems.length !== this.stashItems.length) {
+      this.stashItems = nextItems
+      if (this.agent?.id) this.persistAgentView(this.agent.id)
+    }
+  }
+
+  private maybeAutoFlushStash(previousAgent?: Agent) {
+    if (!this.agent || !this.sendDmRequest || this.agent.status !== 'idle') return
+    const statusChangedToIdle = previousAgent?.status !== 'idle'
+    const switchedAgents = previousAgent?.id !== this.agent.id
+    if (!statusChangedToIdle && !switchedAgents) return
+    if (this.stashItems.some((item) => item.state === 'queued')) return
+    const nextItem = this.stashItems[0]
+    if (!nextItem || nextItem.state !== 'stashed') return
+    void this.sendStashItem(nextItem.clientRequestId)
+  }
+
+  private createStashItem(content: string): StashItem {
+    return {
+      clientRequestId: newClientRequestId(),
+      content,
+      state: 'stashed',
+      createdAt: Date.now(),
+      queuedAt: null,
+      errorMessage: null,
+    }
+  }
+
+  private addStashItem(content: string) {
+    this.stashItems = [...this.stashItems, this.createStashItem(content)]
+    if (this.agent?.id) this.persistAgentView(this.agent.id)
+  }
+
+  private updateStashItem(
+    agentId: string,
+    clientRequestId: string,
+    buildNext: (item: StashItem) => StashItem,
+  ): StashItem | null {
+    const isCurrentAgent = this.agent?.id === agentId
+    const snapshot = agentViewById.get(agentId)
+    const baseItems = isCurrentAgent ? this.stashItems : (snapshot?.stashItems || [])
+    let nextItem: StashItem | null = null
+    const nextItems = baseItems.map((item) => {
+      if (item.clientRequestId !== clientRequestId) return item
+      nextItem = buildNext(item)
+      return nextItem
+    })
+    if (!nextItem) return null
+
+    if (isCurrentAgent) {
+      this.stashItems = nextItems
+      this.persistAgentView(agentId)
+      return nextItem
+    }
+    if (snapshot) {
+      agentViewById.set(agentId, {
+        ...snapshot,
+        stashItems: nextItems.map((item) => ({ ...item })),
+      })
+    }
+    return nextItem
+  }
+
+  private canSendStashItem(index: number): boolean {
+    return !this.stashItems.slice(0, index).some((item) => item.state === 'stashed' || item.state === 'error')
+  }
+
+  private async sendStashItem(clientRequestId: string): Promise<void> {
+    const agentId = this.agent.id
+    const item = this.stashItems.find((candidate) => candidate.clientRequestId === clientRequestId)
+    if (!item || !this.sendDmRequest) return
+
+    const optimisticStatus = this.agent.status === 'idle'
+    const queuedItem = this.updateStashItem(agentId, clientRequestId, (current) => ({
+      ...current,
+      state: 'queued',
+      queuedAt: Date.now(),
+      errorMessage: null,
+    }))
+    if (!queuedItem) return
+
+    try {
+      await this.sendDmRequest(agentId, queuedItem.content, {
+        clientRequestId: queuedItem.clientRequestId,
+        optimisticStatus,
+      })
+    } catch (err) {
+      const errorMessage = err instanceof Error && err.message.trim()
+        ? err.message.trim()
+        : 'Failed to send'
+      const targetItems = this.agent?.id === agentId
+        ? this.stashItems
+        : (agentViewById.get(agentId)?.stashItems || [])
+      const updated = targetItems.find((candidate) => candidate.clientRequestId === clientRequestId)
+      if (!updated) return
+      this.updateStashItem(agentId, clientRequestId, (current) => ({
+        ...current,
+        state: 'error',
+        queuedAt: null,
+        errorMessage,
+      }))
+    }
+  }
+
+  private handleSendNow(clientRequestId: string) {
+    void this.sendStashItem(clientRequestId)
+  }
+
+  private renderStashStrip() {
+    if (this.stashItems.length === 0) return nothing
+
+    return html`
+      <div class="stash-strip" role="status" aria-live="polite">
+        ${this.stashItems.map((item, index) => {
+          const canSendNow = this.canSendStashItem(index) && !!this.sendDmRequest
+          const stateLabel = item.state === 'queued'
+            ? 'Queued behind the current run'
+            : item.state === 'error'
+              ? 'Send failed'
+              : 'Saved while the agent is working'
+
+          return html`
+            <div class="stash-row ${item.state}">
+              <div class="stash-copy">
+                <div class="stash-head">
+                  <span class="stash-label">Stashed</span>
+                  <span class="stash-state">${stateLabel}</span>
+                </div>
+                <div class="stash-content">${item.content}</div>
+                ${item.state === 'error' && item.errorMessage
+                  ? html`<div class="stash-error">${item.errorMessage}</div>`
+                  : nothing}
+              </div>
+              ${item.state === 'queued'
+                ? html`<span class="stash-action passive">Queued...</span>`
+                : html`
+                    <button
+                      class="stash-action"
+                      type="button"
+                      ?disabled=${!canSendNow}
+                      @click=${() => this.handleSendNow(item.clientRequestId)}
+                    >Send now</button>
+                  `}
+            </div>
+          `
+        })}
+      </div>
+    `
   }
 
   private renderMarkdown(text: string) {
     const raw = marked.parse(text, { async: false }) as string
     let sanitized = DOMPurify.sanitize(raw, {
-      ADD_TAGS: ['button'],
-      ADD_ATTR: ['data-app-slug'],
+      ADD_TAGS: ['button', 'img'],
+      ADD_ATTR: ['data-app-slug', 'src', 'alt', 'width', 'height', 'loading'],
     })
     // Replace [app:slug] with clickable buttons
     sanitized = sanitized.replace(
@@ -1834,8 +2351,25 @@ export class AgentChatView extends LitElement {
     const wantsSend = keyboardEvent.key === 'Enter' && !keyboardEvent.shiftKey
     if (wantsSend) {
       keyboardEvent.preventDefault()
+      if (this.isWorkflowRunning) {
+        this.handleComposerInterrupt()
+        return
+      }
       this.handleSend()
     }
+  }
+
+  private get isWorkflowRunning() {
+    return this.agent.status === 'thinking' || this.agent.status === 'responding'
+  }
+
+  private handleComposerInterrupt() {
+    if (!this.isWorkflowRunning) return
+    this.dispatchEvent(new CustomEvent('interrupt-agent', {
+      detail: this.agent.id,
+      bubbles: true,
+      composed: true,
+    }))
   }
 
   private handleComposerAddAction(e: CustomEvent<CodexComposerAddActionDetail>) {
@@ -1852,12 +2386,12 @@ export class AgentChatView extends LitElement {
   }
 
   private get hostExecApprovalValue(): HostExecApprovalMode {
-    return this.hostExecApprovalDraft ?? this.agent.hostExecApprovalMode
+    return this.hostExecApprovalDraft ?? this.agent.hostOperatorApprovalMode
   }
 
   private handleHostExecApprovalChange(event: Event) {
     const nextMode = (event.target as HTMLSelectElement).value as HostExecApprovalMode
-    if (nextMode === this.agent.hostExecApprovalMode) {
+    if (nextMode === this.agent.hostOperatorApprovalMode) {
       this.hostExecApprovalConfirmOpen = false
       this.hostExecApprovalDraft = null
       return
@@ -1885,7 +2419,7 @@ export class AgentChatView extends LitElement {
 
   private async saveHostExecApprovalMode(nextMode: HostExecApprovalMode) {
     if (!this.agent || this.hostExecApprovalSaving) return
-    if (nextMode === this.agent.hostExecApprovalMode) {
+    if (nextMode === this.agent.hostOperatorApprovalMode) {
       this.hostExecApprovalConfirmOpen = false
       this.hostExecApprovalDraft = null
       return
@@ -1893,7 +2427,7 @@ export class AgentChatView extends LitElement {
 
     this.hostExecApprovalSaving = true
     try {
-      const updated = await api.updateAgent(this.agent.id, { hostExecApprovalMode: nextMode })
+      const updated = await api.updateAgent(this.agent.id, { hostOperatorApprovalMode: nextMode })
       this.dispatchEvent(new CustomEvent('agent-updated', {
         detail: updated,
         bubbles: true,
@@ -1910,6 +2444,106 @@ export class AgentChatView extends LitElement {
     }
   }
 
+  private async openHostSettings() {
+    this.hostAppsDraft = [...this.agent.hostOperatorApps]
+    this.hostPathsDraft = [...this.agent.hostOperatorPaths]
+    this.hostNewApp = ''
+    this.hostSettingsOpen = true
+    this.hostRunningAppsLoading = true
+    try {
+      const response = await api.listRunningHostOperatorAppsAdmin()
+      if (!this.hostSettingsOpen) return
+      this.hostRunningApps = response.apps
+    } catch (err) {
+      console.error('Failed to load running host apps:', err)
+      if (this.hostSettingsOpen) this.hostRunningApps = []
+    } finally {
+      if (this.hostSettingsOpen) this.hostRunningAppsLoading = false
+    }
+  }
+
+  private closeHostSettings() {
+    if (this.hostSettingsSaving) return
+    this.hostSettingsOpen = false
+    this.hostNewApp = ''
+    this.hostAppSearchFocused = false
+  }
+
+  private handleHostNewAppInput(event: Event) {
+    this.hostNewApp = (event.target as HTMLInputElement).value
+  }
+
+  private get filteredHostApps() {
+    const query = this.hostNewApp.trim().toLowerCase()
+    const filtered = query
+      ? this.hostRunningApps.filter((app) =>
+          app.appName.toLowerCase().includes(query) || app.bundleId.toLowerCase().includes(query))
+      : this.hostRunningApps
+    return filtered.slice().sort((a, b) => {
+      const aAdded = this.hostAppsDraft.includes(a.bundleId) ? 1 : 0
+      const bAdded = this.hostAppsDraft.includes(b.bundleId) ? 1 : 0
+      if (aAdded !== bAdded) return aAdded - bAdded
+      return a.appName.localeCompare(b.appName)
+    })
+  }
+
+  private get hostSearchHasExactMatch() {
+    const query = this.hostNewApp.trim().toLowerCase()
+    if (!query) return true
+    return this.hostRunningApps.some((app) =>
+      app.bundleId.toLowerCase() === query || app.appName.toLowerCase() === query)
+  }
+
+  private addHostApp(bundleId: string) {
+    const normalized = bundleId.trim()
+    if (!normalized) return
+    if (!this.hostAppsDraft.includes(normalized)) {
+      this.hostAppsDraft = [...this.hostAppsDraft, normalized].sort((a, b) => a.localeCompare(b))
+    }
+    this.hostNewApp = ''
+  }
+
+  private removeHostApp(bundleId: string) {
+    this.hostAppsDraft = this.hostAppsDraft.filter((item) => item !== bundleId)
+  }
+
+  private removeHostPath(path: string) {
+    this.hostPathsDraft = this.hostPathsDraft.filter((item) => item !== path)
+  }
+
+  private async handleAddHostPath() {
+    try {
+      const result = await api.selectAgentMountHostDirectory(this.agent.id)
+      if (result.status !== 'selected') return
+      if (!this.hostPathsDraft.includes(result.hostPath)) {
+        this.hostPathsDraft = [...this.hostPathsDraft, result.hostPath].sort((a, b) => a.localeCompare(b))
+      }
+    } catch (err) {
+      console.error('Failed to pick host operator path:', err)
+    }
+  }
+
+  private async saveHostSettings() {
+    if (this.hostSettingsSaving) return
+    this.hostSettingsSaving = true
+    try {
+      const updated = await api.updateAgent(this.agent.id, {
+        hostOperatorApps: this.hostAppsDraft,
+        hostOperatorPaths: this.hostPathsDraft,
+      })
+      this.dispatchEvent(new CustomEvent('agent-updated', {
+        detail: updated,
+        bubbles: true,
+        composed: true,
+      }))
+      this.hostSettingsOpen = false
+    } catch (err) {
+      console.error('Failed to save host operator settings:', err)
+    } finally {
+      this.hostSettingsSaving = false
+    }
+  }
+
   private async handleSend() {
     const content = this.composerEl?.value?.trim()
     if (!content || this.sending) return
@@ -1923,10 +2557,18 @@ export class AgentChatView extends LitElement {
     this.composerEl.value = ''
     this.composerEl.focusInput()
     try {
-      this.dispatchEvent(new CustomEvent('send-dm', {
-        detail: { agentId: this.agent.id, content },
-        bubbles: true, composed: true,
-      }))
+      if (this.agent.status === 'thinking' || this.agent.status === 'responding') {
+        this.addStashItem(content)
+        return
+      }
+      if (!this.sendDmRequest) return
+      const clientRequestId = newClientRequestId()
+      void this.sendDmRequest(this.agent.id, content, {
+        clientRequestId,
+        optimisticStatus: true,
+      }).catch((err) => {
+        console.error('Failed to send DM:', err)
+      })
     } finally {
       this.sending = false
     }
@@ -2292,49 +2934,69 @@ export class AgentChatView extends LitElement {
     const statusLabel = STATUS_LABELS[this.agent.status] || this.agent.status
     const isStopped = this.agent.status === 'stopped'
     const isStarting = this.agent.status === 'starting'
+    const isStopping = this.agent.status === 'stopping'
+    const isWorkflowRunning = this.isWorkflowRunning
     const isAnimated = this.agent.status === 'thinking' || this.agent.status === 'responding' || isStarting
-    const inputDisabled = isStopped || isStarting || this.sending
+    const inputDisabled = isStopped || isStarting || isStopping || this.sending
     const memoryContentWidth = this.getMemoryContentWidth()
     const memoryFilesWidth = this.clampMemoryFilesPaneWidth(this.memoryFilesPaneWidthPx, memoryContentWidth)
     const memoryFilesMax = this.getMemoryFilesPaneEffectiveMax(memoryContentWidth)
     const showMemoryDateColumn = memoryFilesWidth >= 320
 
     return html`
-      <div class="header">
-        <div class="header-main">
-          <div class="header-avatar" style="background: ${this.agent.avatarColor}" @click=${this.handleOpenProfile} title="View profile">
-            ${initial}
-          </div>
-          <div class="header-info">
-            <div class="header-name">${this.agent.name}</div>
-            <div class="header-status">
-              <span class="status-dot ${isAnimated ? 'thinking' : ''}" style="background: ${statusColor}"></span>
-              ${statusLabel}
+      ${this.paneIntegrated ? nothing : html`
+        <div class="header" data-testid="agent-profile-header">
+          <div class="header-main">
+            <div
+              class="header-avatar"
+              style="background: ${this.agent.avatarColor}"
+              @click=${this.handleOpenProfile}
+              title="View profile"
+              data-testid="agent-profile-trigger-avatar"
+            >
+              ${initial}
+            </div>
+            <div class="header-info">
+              <div class="header-kicker">Agent Workspace</div>
+              <div
+                class="header-name profile-trigger"
+                @click=${this.handleOpenProfile}
+                title="View profile"
+                data-testid="agent-profile-trigger-name"
+              >
+                ${this.agent.name}
+              </div>
+              <div class="header-status">
+                <span class="status-dot ${isAnimated ? 'thinking' : ''}" style="background: ${statusColor}"></span>
+                ${statusLabel}
+              </div>
             </div>
           </div>
         </div>
-      </div>
+      `}
 
       <div class="conversation" @scroll=${this.handleScroll} @click=${this.handleConversationClick}>
-        ${this.entries.length === 0
-          ? html`
-            <div class="empty-state">
-              <div class="empty-avatar" style="background: ${this.agent.avatarColor}">${initial}</div>
-              <div class="empty-title">${this.agent.name}</div>
-              <div class="empty-subtitle">
-                ${isStopped
-                  ? 'This agent is offline. Start it to begin a conversation.'
-                  : isStarting
-                    ? 'Agent is starting up...'
-                    : 'No activity yet. Send a message or wait for channel activity.'}
+        <div class="conversation-lane">
+          ${this.entries.length === 0
+            ? html`
+              <div class="empty-state">
+                <div class="empty-avatar" style="background: ${this.agent.avatarColor}">${initial}</div>
+                <div class="empty-title">${this.agent.name}</div>
+                <div class="empty-subtitle">
+                  ${isStopped
+                    ? 'This agent is offline. Start it to begin a conversation.'
+                    : isStarting
+                      ? 'Agent is starting up...'
+                      : 'No activity yet. Send a message or wait for channel activity.'}
+                </div>
               </div>
-            </div>
-          `
-          : this.entries.map((e, i) => this.renderEntry(e, i === this.entries.length - 1))
-        }
+            `
+            : this.entries.map((e, i) => this.renderEntry(e, i === this.entries.length - 1))
+          }
+        </div>
       </div>
 
-      <div class="input-area">
+      <div class="input-area" data-testid="composer-dock">
         ${this.showModelSelectionPrompt
           ? html`
               <div class="input-guard" role="status" aria-live="polite">
@@ -2345,6 +3007,7 @@ export class AgentChatView extends LitElement {
               </div>
             `
           : nothing}
+        ${this.renderStashStrip()}
         <div class="composer-shell">
           ${this.mountPopoverOpen ? html`
             <div class="mount-popover" @keydown=${this.handleMountPopoverKeydown}>
@@ -2354,25 +3017,123 @@ export class AgentChatView extends LitElement {
               ></agent-mounts-panel>
             </div>
           ` : nothing}
-          ${this.hostExecApprovalConfirmOpen ? html`
-            <div class="host-exec-policy-popover" role="dialog" aria-label="Confirm dangerous host exec policy">
-              <div class="host-exec-policy-title">Enable dangerous host exec mode?</div>
-              <div class="host-exec-policy-copy">
-                Future host exec requests for ${this.agent.name} will run without human approval. Existing pending host exec requests for this agent will also auto-approve immediately.
+          ${this.hostSettingsOpen ? html`
+            <div class="host-settings-popover" role="dialog" aria-label="Host operator settings">
+              <div class="host-settings-header">
+                <div class="host-settings-title">Host Operator Settings</div>
+                <button type="button" @click=${this.closeHostSettings}>Close</button>
               </div>
-              <div class="host-exec-policy-actions">
-                <button
-                  class="host-exec-policy-btn"
-                  type="button"
+
+              <div class="host-settings-section">
+                <div class="host-settings-label">Approval Mode</div>
+                <select
+                  class="host-settings-select"
+                  .value=${this.hostExecApprovalValue}
                   ?disabled=${this.hostExecApprovalSaving}
-                  @click=${this.cancelHostExecApprovalConfirm}
-                >Cancel</button>
-                <button
-                  class="host-exec-policy-btn primary"
-                  type="button"
-                  ?disabled=${this.hostExecApprovalSaving}
-                  @click=${this.confirmHostExecApprovalChange}
-                >${this.hostExecApprovalSaving ? 'Saving...' : 'Enable'}</button>
+                  @change=${this.handleHostExecApprovalChange}
+                >
+                  ${HOST_EXEC_APPROVAL_OPTIONS.map((option) => html`
+                    <option value=${option.value}>${option.label}</option>
+                  `)}
+                </select>
+                ${this.hostExecApprovalConfirmOpen ? html`
+                  <div class="host-settings-danger-confirm">
+                    <div class="host-settings-help">
+                      Future host operator requests for ${this.agent.name} will run without human approval. Existing pending requests will also auto-approve immediately.
+                    </div>
+                    <div class="host-settings-danger-actions">
+                      <button type="button" ?disabled=${this.hostExecApprovalSaving} @click=${this.cancelHostExecApprovalConfirm}>Cancel</button>
+                      <button type="button" style="background: color-mix(in srgb, var(--error) 14%, var(--bg-surface)); color: var(--error);" ?disabled=${this.hostExecApprovalSaving} @click=${this.confirmHostExecApprovalChange}>
+                        ${this.hostExecApprovalSaving ? 'Saving...' : 'Enable'}
+                      </button>
+                    </div>
+                  </div>
+                ` : nothing}
+              </div>
+
+              <div class="host-settings-section">
+                <div class="host-settings-label">Allowed Apps</div>
+                <div class="host-settings-help">Bundle IDs are enforced before any request enters the approval queue.</div>
+                <input
+                  class="host-app-search"
+                  type="search"
+                  .value=${this.hostNewApp}
+                  @input=${this.handleHostNewAppInput}
+                  @focus=${() => { this.hostAppSearchFocused = true }}
+                  @blur=${() => { setTimeout(() => { this.hostAppSearchFocused = false }, 150) }}
+                  placeholder="Search running apps..."
+                />
+                ${this.hostAppSearchFocused || this.hostNewApp.trim() ? html`
+                  <div class="host-app-results">
+                    ${this.hostRunningAppsLoading
+                      ? html`<div class="host-app-empty">Loading apps...</div>`
+                      : html`
+                        ${this.filteredHostApps.map((app) => {
+                            const isAdded = this.hostAppsDraft.includes(app.bundleId)
+                            return html`
+                              <div
+                                class="host-app-result-item ${isAdded ? 'added' : ''}"
+                                @click=${() => !isAdded && this.addHostApp(app.bundleId)}
+                              >
+                                <div class="host-app-result-info">
+                                  <div class="host-app-result-name">${app.appName}</div>
+                                  <div class="host-app-result-bundle">${app.bundleId}</div>
+                                </div>
+                                ${isAdded ? html`<span class="host-app-result-badge">Added</span>` : nothing}
+                              </div>
+                            `
+                          })}
+                        ${this.hostNewApp.trim() && !this.hostSearchHasExactMatch
+                          ? html`
+                            <div class="host-app-add-manual" @click=${() => this.addHostApp(this.hostNewApp)}>
+                              Add "${this.hostNewApp.trim()}"
+                            </div>
+                          `
+                          : nothing}
+                        ${this.filteredHostApps.length === 0 && !this.hostNewApp.trim()
+                          ? html`<div class="host-app-empty">No running apps detected.</div>`
+                          : nothing}
+                        ${this.filteredHostApps.length === 0 && this.hostNewApp.trim() && this.hostSearchHasExactMatch
+                          ? html`<div class="host-app-empty">No matching apps.</div>`
+                          : nothing}
+                      `}
+                  </div>
+                ` : nothing}
+                <div class="host-settings-list">
+                  ${this.hostAppsDraft.length === 0
+                    ? html`<div class="host-settings-help">No allowed apps configured.</div>`
+                    : this.hostAppsDraft.map((bundleId) => html`
+                        <div class="host-settings-chip">
+                          <span>${bundleId}</span>
+                          <button type="button" @click=${() => this.removeHostApp(bundleId)}>Remove</button>
+                        </div>
+                      `)}
+                </div>
+              </div>
+
+              <div class="host-settings-section">
+                <div class="host-settings-label">Allowed Paths</div>
+                <div class="host-settings-help">Filesystem operations are limited to these absolute host roots.</div>
+                <div class="host-settings-row">
+                  <button type="button" @click=${this.handleAddHostPath}>Add folder</button>
+                </div>
+                <div class="host-settings-list">
+                  ${this.hostPathsDraft.length === 0
+                    ? html`<div class="host-settings-help">No allowed paths configured.</div>`
+                    : this.hostPathsDraft.map((path) => html`
+                        <div class="host-settings-chip">
+                          <span>${path}</span>
+                          <button type="button" @click=${() => this.removeHostPath(path)}>Remove</button>
+                        </div>
+                      `)}
+                </div>
+              </div>
+
+              <div class="host-settings-actions">
+                <button type="button" @click=${this.closeHostSettings}>Cancel</button>
+                <button class="primary" type="button" ?disabled=${this.hostSettingsSaving} @click=${this.saveHostSettings}>
+                  ${this.hostSettingsSaving ? 'Saving...' : 'Save'}
+                </button>
               </div>
             </div>
           ` : nothing}
@@ -2380,34 +3141,27 @@ export class AgentChatView extends LitElement {
             .placeholder=${isStarting ? 'Agent is starting...' : `Message ${this.agent.name}...`}
             ?disabled=${inputDisabled}
             .sending=${this.sending}
+            .submitMode=${isWorkflowRunning ? 'interrupt' : 'send'}
             .addActions=${AGENT_COMPOSER_ADD_ACTIONS}
             @composer-keydown=${this.handleComposerKeydown}
             @composer-add-action=${this.handleComposerAddAction}
             @composer-send=${this.handleSend}
+            @composer-interrupt=${this.handleComposerInterrupt}
           >
             ${isStopped
               ? html`<button slot="footer-controls" class="composer-aux-btn success" type="button" @click=${this.handleToggleAgent}>Start</button>`
               : isStarting
                 ? html`<button slot="footer-controls" class="composer-aux-btn danger" type="button" @click=${this.handleCancelStart}>Cancel</button>`
-                : html`<button slot="footer-controls" class="composer-aux-btn danger" type="button" @click=${this.handleToggleAgent}>Stop</button>`
+                : isWorkflowRunning || isStopping
+                  ? nothing
+                  : html`<button slot="footer-controls" class="composer-aux-btn danger" type="button" @click=${this.handleToggleAgent}>Stop</button>`
             }
             <button slot="footer-controls" class="composer-aux-btn" type="button" @click=${this.handleOpenMemory} title="View agent memory">
               Memory
             </button>
-            <div slot="footer-controls" class="composer-aux-select-wrap">
-              <select
-                class="composer-aux-select"
-                .value=${this.hostExecApprovalValue}
-                ?disabled=${this.hostExecApprovalSaving}
-                @change=${this.handleHostExecApprovalChange}
-                title="Host exec approval mode"
-                aria-label="Host exec approval mode"
-              >
-                ${HOST_EXEC_APPROVAL_OPTIONS.map((option) => html`
-                  <option value=${option.value}>${option.label}</option>
-                `)}
-              </select>
-            </div>
+            <button slot="footer-controls" class="composer-aux-btn" type="button" @click=${this.openHostSettings} title="Configure host operator access">
+              Host
+            </button>
           </codex-composer>
         </div>
       </div>

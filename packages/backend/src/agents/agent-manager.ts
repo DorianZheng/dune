@@ -9,27 +9,36 @@ import { broadcastAll } from '../websocket/ws-server.js'
 import { config } from '../config.js'
 import { createBoxliteRuntime } from '../boxlite/runtime.js'
 import { resolve, dirname, join } from 'node:path'
-import { readFileSync, mkdirSync, readdirSync, statSync, existsSync, rmSync, cpSync, writeFileSync } from 'node:fs'
+import { readFileSync, mkdirSync, readdirSync, statSync, existsSync, rmSync, cpSync, writeFileSync, renameSync } from 'node:fs'
 import { networkInterfaces } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 import { newEventId } from '../utils/ids.js'
 import * as todoStore from '../storage/todo-store.js'
 import { isValidDueAtMs } from '../todos/due-at.js'
-import { getEffectiveClaudeSettings } from '../storage/claude-settings-store.js'
-import type { Agent, AgentLogEntry, AgentStatusType } from '@dune/shared'
+import { getEffectiveClaudeSettings, getStoredClaudeSettings } from '../storage/claude-settings-store.js'
+import type { Agent, AgentLogEntry, AgentStatusType, Todo } from '@dune/shared'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const BACKEND_RUNTIME_ROOT = resolve(__dirname, '..')
 
 function resolveBundledAssetDir(relativeDir: string, runtimeRoot = BACKEND_RUNTIME_ROOT): string {
+  // Check config-provided paths first (used by Electron packaged mode)
+  const configPaths: Record<string, string | undefined> = {
+    'agent-skills': config.agentSkillsPath,
+    'agent-mcp': config.agentMcpPath,
+    'agent-prompts': config.agentPromptsPath,
+  }
+  const configPath = configPaths[relativeDir]
+  if (configPath && existsSync(configPath)) return configPath
+
   const runtimePath = join(runtimeRoot, relativeDir)
   if (existsSync(runtimePath)) return runtimePath
 
   const sourcePath = join(resolve(runtimeRoot, '../src'), relativeDir)
   if (existsSync(sourcePath)) return sourcePath
 
-  return runtimePath
+  return configPath || runtimePath
 }
 
 // ── Constants (mirrors Python SkillBox) ─────────────────────────────────
@@ -49,6 +58,28 @@ const SKILLBOX_PATH = '/config/.local/bin:/lsiopy/bin:/usr/local/sbin:/usr/local
 /** MCP server config — written to /config/mcp-servers.json at startup.
  *  Must be a SEPARATE file because the CLI overwrites $HOME/.claude.json with its own state. */
 const MCP_CONFIG_PATH = '/config/mcp-servers.json'
+const AGENT_DUNE_VOLUME_PATH = '/config/.dune'
+const AGENT_DUNE_MEMORY_PATH = `${AGENT_DUNE_VOLUME_PATH}/memory`
+const AGENT_DUNE_MINIAPPS_PATH = `${AGENT_DUNE_VOLUME_PATH}/miniapps`
+const AGENT_DUNE_CLAUDE_PATH = `${AGENT_DUNE_VOLUME_PATH}/.claude`
+const AGENT_DUNE_CLAUDE_STATE_PATH = `${AGENT_DUNE_VOLUME_PATH}/.claude.json`
+const AGENT_DUNE_SYSTEM_PATH = `${AGENT_DUNE_VOLUME_PATH}/system`
+const AGENT_DUNE_COMMUNICATION_PATH = `${AGENT_DUNE_SYSTEM_PATH}/communication`
+const DUNE_PROXY_GUEST_PATH = `${AGENT_DUNE_COMMUNICATION_PATH}/dune_proxy.py`
+const MAILBOX_DAEMON_GUEST_PATH = `${AGENT_DUNE_COMMUNICATION_PATH}/mailbox_daemon.py`
+const BACKEND_URL_RESOLVER_GUEST_PATH = `${AGENT_DUNE_COMMUNICATION_PATH}/backend_url_resolver.py`
+const BACKEND_ENDPOINTS_CONFIG_GUEST_PATH = `${AGENT_DUNE_COMMUNICATION_PATH}/backend-endpoints.json`
+const AGENT_MEMORY_VOLUME_PATH = '/config/memory'
+const AGENT_MINIAPP_VOLUME_PATH = '/config/miniapps'
+const AGENT_CLAUDE_VOLUME_PATH = '/config/.claude'
+const CLAUDE_STATE_PATH = '/config/.claude.json'
+const STOP_AGENT_SHUTDOWN_PROMPT = 'You are being shut down. Save any important information from this session to your memory files in /config/memory/ now. Be concise — you have limited time.'
+const TODO_HANDOFF_MEMORY_PATH = `${AGENT_MEMORY_VOLUME_PATH}/todo-handoff.md`
+const LEADER_THESIS_MEMORY_PATH = `${AGENT_MEMORY_VOLUME_PATH}/leader-thesis.md`
+const TODO_HEARTBEAT_DELAY_MINUTES = 30
+const DUNE_PROXY_PROCESS_PATTERN = '[d]une_proxy.py'
+const MAILBOX_DAEMON_PROCESS_PATTERN = '[m]ailbox_daemon.py'
+const COMMUNICATION_DAEMON_REFRESH_INTERVAL_MS = 60_000
 const MCP_CONFIG = JSON.stringify({
   mcpServers: {
     computer: {
@@ -68,15 +99,26 @@ const NGINX_CONFIG_CANDIDATES = [
 ]
 const NGINX_WEBSOCKET_ANCHOR = '  location /websocket'
 const AGENT_SKILLS_SOURCE_DIR = resolveBundledAssetDir('agent-skills')
-const AGENT_SKILLS_VOLUME_PATH = '/config/.claude/skills'
-const CLAUDE_SETTINGS_PATH = '/config/.claude/settings.json'
-const AGENT_SKILLS = [
+const AGENT_SKILLS_VOLUME_PATH = `${AGENT_CLAUDE_VOLUME_PATH}/skills`
+const CLAUDE_SETTINGS_PATH = `${AGENT_CLAUDE_VOLUME_PATH}/settings.json`
+const COORDINATION_AGENT_SKILLS = [
   'dune-communication',
-  'dune-host-operator',
-  'dune-miniapp-builder',
-  'dune-sandbox-operator',
   'dune-team-manager',
   'dune-todo',
+  'dune-host-operator',
+] as const
+const FOLLOWER_AGENT_SKILLS = [
+  ...COORDINATION_AGENT_SKILLS,
+  'dune-miniapp-builder',
+  'dune-sandbox-operator',
+] as const
+const LEADER_AGENT_SKILLS = [
+  ...COORDINATION_AGENT_SKILLS,
+  'dune-leader',
+] as const
+const AGENT_SKILLS = [
+  ...FOLLOWER_AGENT_SKILLS,
+  ...LEADER_AGENT_SKILLS,
 ] as const
 export const BUILTIN_AGENT_SKILLS = AGENT_SKILLS
 
@@ -91,6 +133,8 @@ export type SkillInfo = {
   scripts: string[]
   markdown: string
 }
+
+type BuiltinSkillName = typeof AGENT_SKILLS[number]
 
 type ClaudeSettingsEnvValues = {
   ANTHROPIC_AUTH_TOKEN?: string
@@ -138,10 +182,17 @@ function parseSkillFrontmatter(content: string): { name: string; description: st
   return { name, description }
 }
 
+function getBuiltinAgentSkillNames(agent?: Pick<Agent, 'role'> | null): BuiltinSkillName[] {
+  if (!agent) return [...AGENT_SKILLS]
+  return agent.role === 'leader'
+    ? [...LEADER_AGENT_SKILLS]
+    : [...FOLLOWER_AGENT_SKILLS]
+}
+
 /** List all skills with their metadata for an agent. */
-export function listSkills(): SkillInfo[] {
+export function listSkills(agent?: Pick<Agent, 'role'> | null): SkillInfo[] {
   const skills: SkillInfo[] = []
-  for (const skillName of AGENT_SKILLS) {
+  for (const skillName of getBuiltinAgentSkillNames(agent)) {
     const skillDir = join(AGENT_SKILLS_SOURCE_DIR, skillName)
     if (!existsSync(skillDir)) continue
 
@@ -174,7 +225,7 @@ export function listSkills(): SkillInfo[] {
 export function assembleSystemPrompt(agentId: string): string {
   const agent = agentStore.getAgent(agentId)
   if (!agent) throw new Error(`Agent ${agentId} not found`)
-  return getSystemPromptTemplate()
+  return buildSystemPrompt(agent)
 }
 const AGENT_SKILL_FINGERPRINT_FILE = '.dune-source-fingerprint'
 const MINIAPP_LOCATION_BLOCK = [
@@ -210,6 +261,15 @@ type RuntimeVolumeSpec = {
   readOnly?: boolean
 }
 
+type AgentRuntimeHostPaths = {
+  duneRootHostPath: string
+  memoryHostPath: string
+  miniappHostPath: string
+  claudeHostPath: string
+  claudeStateHostPath: string
+  communicationHostPath: string
+}
+
 function buildAgentRuntimeVolumes(agentId: string, baseVolumes: RuntimeVolumeSpec[]): RuntimeVolumeSpec[] {
   const configuredMounts = agentRuntimeMountStore.resolveAgentRuntimeVolumeMounts(agentId)
   return [
@@ -227,6 +287,20 @@ export function __buildAgentRuntimeVolumesForTests(
   baseVolumes: RuntimeVolumeSpec[],
 ): RuntimeVolumeSpec[] {
   return buildAgentRuntimeVolumes(agentId, baseVolumes)
+}
+
+function buildAgentRuntimeBaseVolumes(hostPaths: AgentRuntimeHostPaths): RuntimeVolumeSpec[] {
+  return [
+    { hostPath: hostPaths.duneRootHostPath, guestPath: AGENT_DUNE_VOLUME_PATH },
+  ]
+}
+
+export function __buildAgentRuntimeBaseVolumesForTests(agentId: string): RuntimeVolumeSpec[] {
+  return buildAgentRuntimeBaseVolumes(ensureAgentRuntimeHostPaths(agentId))
+}
+
+export function __ensureAgentRuntimeHostPathsForTests(agentId: string): AgentRuntimeHostPaths {
+  return ensureAgentRuntimeHostPaths(agentId)
 }
 
 export function patchMiniappNginxRouting(configText: string): MiniappNginxPatchResult {
@@ -261,6 +335,34 @@ function getSystemPromptTemplate(): string {
   return prompt
 }
 
+function buildSystemPrompt(agent: Pick<Agent, 'name' | 'personality' | 'role' | 'workMode'>): string {
+  const roleGuidance = agent.role === 'leader'
+    ? `You are the leader. You assign work, follow up, review outcomes, and remain accountable for the result. Do not implement directly yourself. Remove obstacles aggressively and do not wait passively—exhaust obstacle-removal methods (re-scope, reassign, recruit, gather context, reroute, escalate sideways) before escalating to a human. When work goes idle or the mission is unclear, use dune-leader to reassess the mission, update ${LEADER_THESIS_MEMORY_PATH} only when the mission materially changes, run one delegation-and-review PDCA cycle, and end with the required Leader PDCA footer. Use nextPlan and ${TODO_HANDOFF_MEMORY_PATH} only as optional operational notes after the cycle.`
+    : 'You are a follower. Preserve the original todo request, keep progress in working fields or memory, and do not rewrite the original request snapshot.'
+  const workModeGuidance = agent.workMode === 'plan-first'
+    ? 'Work mode: plan-first. Before editing files, using tools, or taking multi-step action, inspect the current state and form a concrete plan for yourself first. Then execute against that plan.'
+    : 'Work mode: normal. Once you have enough context, act directly and avoid unnecessary planning overhead.'
+
+  return [
+    getSystemPromptTemplate(),
+    '',
+    '<agent>',
+    `Name: ${agent.name}`,
+    `Role: ${agent.role}`,
+    `Work mode: ${agent.workMode}`,
+    `Personality: ${agent.personality}`,
+    roleGuidance,
+    workModeGuidance,
+    '</agent>',
+  ].join('\n')
+}
+
+function resolveClaudeModelId(agent: Pick<Agent, 'modelIdOverride'>): string | null {
+  const override = agent.modelIdOverride?.trim()
+  if (override) return override
+  return getStoredClaudeSettings().defaultModelId
+}
+
 
 interface RunningAgent {
   box: SimpleBox
@@ -269,10 +371,16 @@ interface RunningAgent {
   guiHttpPort: number
   guiHttpsPort: number
   backendUrl: string
+  backendCandidates?: string[]
+  daemonAssetHash?: string
+  daemonConfigHash?: string
   cliInstalled: boolean
   hasSession: boolean
   startedAt: number
   thinkingSince: number  // timestamp when agent entered thinking state, 0 if not thinking
+  currentExecution: { kill: () => Promise<void> } | null
+  interruptRequested: boolean
+  interruptAbort: { promise: Promise<void>; resolve: () => void } | null
 }
 
 const runningAgents = new Map<string, RunningAgent>()
@@ -537,39 +645,106 @@ function getBackendPort(): number {
   }
 }
 
-/** Detect the host's LAN IP from the host side. */
-function getHostLanIp(): string {
+function dedupeStrings(values: string[]): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const value of values) {
+    const trimmed = value.trim()
+    if (!trimmed || seen.has(trimmed)) continue
+    seen.add(trimmed)
+    out.push(trimmed)
+  }
+  return out
+}
+
+/** Detect the host's IPv4 addresses from the host side. */
+function getHostLanIps(): string[] {
+  const addresses: string[] = []
   for (const ifaces of Object.values(networkInterfaces())) {
     for (const iface of ifaces || []) {
-      if (!iface.internal && iface.family === 'IPv4') return iface.address
+      if (!iface.internal && iface.family === 'IPv4') addresses.push(iface.address)
     }
   }
-  return ''
+  return dedupeStrings(addresses)
+}
+
+async function getContainerDefaultGateway(box: SimpleBox): Promise<string> {
+  return retriedExec(box, 'bash', ['-c', "ip route | awk '/default/ {print $3}'"], { DISPLAY: ':1' }, 10_000)
+    .then(r => r.stdout.trim())
+    .catch(() => '')
+}
+
+function buildBackendUrlCandidates(
+  backendPort: number,
+  options: { previousUrl?: string | null; defaultGateway?: string | null; hostIps?: string[] | null } = {},
+): string[] {
+  const previousUrl = options.previousUrl?.trim() || ''
+  const gatewayUrl = options.defaultGateway?.trim()
+    ? `http://${options.defaultGateway.trim()}:${backendPort}`
+    : ''
+  const hostIps = options.hostIps?.length
+    ? dedupeStrings(options.hostIps)
+    : getHostLanIps()
+
+  return dedupeStrings([
+    previousUrl,
+    `http://host.docker.internal:${backendPort}`,
+    gatewayUrl,
+    ...hostIps.map(ip => `http://${ip}:${backendPort}`),
+  ])
+}
+
+async function probeBackendUrl(box: SimpleBox, backendUrl: string): Promise<boolean> {
+  const check = await retriedExec(box, 'bash', ['-c',
+    `curl -s --max-time 3 -o /dev/null -w '%{http_code}' ${backendUrl}/api/agents 2>/dev/null`
+  ], { DISPLAY: ':1' }, 10_000)
+  return check.stdout.trim() === '200'
+}
+
+async function resolveBackendEndpointConfig(
+  box: SimpleBox,
+  backendPort: number,
+  options: { previousUrl?: string | null } = {},
+): Promise<BackendEndpointConfig> {
+  const defaultGateway = await getContainerDefaultGateway(box)
+  const urls = buildBackendUrlCandidates(backendPort, {
+    previousUrl: options.previousUrl,
+    defaultGateway,
+  })
+
+  let preferredUrl: string | null = null
+  for (const candidate of urls) {
+    if (await probeBackendUrl(box, candidate)) {
+      preferredUrl = candidate
+      break
+    }
+  }
+
+  return {
+    preferredUrl,
+    urls,
+    updatedAt: Date.now(),
+  }
 }
 
 /** Detect the host URL reachable from inside the container.
- *  Tests actual HTTP health endpoint (not just TCP) to avoid false positives
- *  from DNS proxies (e.g. Clash fake-IP) that accept TCP but drop HTTP. */
-async function detectHostUrl(box: SimpleBox, backendPort: number): Promise<string> {
-  const candidates = [
-    'host.docker.internal',
-    // Gateway IP from container's default route
-    await retriedExec(box, 'bash', ['-c', "ip route | awk '/default/ {print $3}'"], { DISPLAY: ':1' }, 10_000)
-      .then(r => r.stdout.trim()).catch(() => ''),
-    // Host LAN IP (detected from host side — most reliable when DNS proxy interferes)
-    getHostLanIp(),
-  ].filter(Boolean)
-
-  for (const host of candidates) {
-    const check = await retriedExec(box, 'bash', ['-c',
-      `curl -s --max-time 3 http://${host}:${backendPort}/health 2>/dev/null`
-    ], { DISPLAY: ':1' }, 10_000)
-    if (check.stdout.includes('"ok"')) {
-      return `http://${host}:${backendPort}`
-    }
-  }
-
+ *  Tests a real API route to avoid false positives from addresses that accept TCP
+ *  or /health but do not actually serve agent traffic. */
+async function detectHostUrl(
+  box: SimpleBox,
+  backendPort: number,
+  options: { previousUrl?: string | null } = {},
+): Promise<string> {
+  const config = await resolveBackendEndpointConfig(box, backendPort, options)
+  if (config.preferredUrl) return config.preferredUrl
   throw new Error('Cannot detect host URL from container')
+}
+
+export function __buildBackendUrlCandidatesForTests(
+  backendPort: number,
+  options: { previousUrl?: string | null; defaultGateway?: string | null; hostIps?: string[] | null } = {},
+): string[] {
+  return buildBackendUrlCandidates(backendPort, options)
 }
 
 /** Read a Python file from the agent-mcp directory. */
@@ -649,7 +824,7 @@ async function upsertClaudeSettingsInBox(box: SimpleBox, agentId: string): Promi
   await retriedExec(
     box,
     'bash',
-    ['-c', 'mkdir -p /config/.claude && chown -R abc:abc /config/.claude'],
+    ['-c', `mkdir -p ${AGENT_DUNE_CLAUDE_PATH} && chown -R abc:abc ${AGENT_DUNE_CLAUDE_PATH}`],
     { DISPLAY: ':1' },
   )
 
@@ -670,7 +845,182 @@ async function upsertClaudeSettingsInBox(box: SimpleBox, agentId: string): Promi
 }
 
 function getAgentSkillsHostPath(agentId: string): string {
-  return join(config.agentsRoot, agentId, 'skills')
+  return join(getAgentClaudeHostPath(agentId), 'skills')
+}
+
+function getAgentDuneHostPath(agentId: string): string {
+  return join(config.agentsRoot, agentId, '.dune')
+}
+
+function getAgentClaudeHostPath(agentId: string): string {
+  return join(getAgentDuneHostPath(agentId), '.claude')
+}
+
+function getAgentClaudeStateHostPath(agentId: string): string {
+  return join(getAgentDuneHostPath(agentId), '.claude.json')
+}
+
+function getAgentCommunicationHostPath(agentId: string): string {
+  return join(getAgentDuneHostPath(agentId), 'system', 'communication')
+}
+
+function moveAgentPersistencePathIfNeeded(legacyPath: string, nextPath: string): void {
+  if (!existsSync(legacyPath) || existsSync(nextPath)) return
+
+  mkdirSync(dirname(nextPath), { recursive: true })
+
+  try {
+    renameSync(legacyPath, nextPath)
+    return
+  } catch (err: any) {
+    if (err?.code !== 'EXDEV') throw err
+  }
+
+  const legacyStat = statSync(legacyPath)
+  cpSync(legacyPath, nextPath, { recursive: legacyStat.isDirectory() })
+  rmSync(legacyPath, { recursive: legacyStat.isDirectory(), force: true })
+}
+
+function migrateLegacyAgentPersistence(agentId: string, duneRootHostPath: string): void {
+  const legacyRoot = join(config.agentsRoot, agentId)
+  mkdirSync(duneRootHostPath, { recursive: true })
+
+  moveAgentPersistencePathIfNeeded(join(legacyRoot, 'memory'), join(duneRootHostPath, 'memory'))
+  moveAgentPersistencePathIfNeeded(join(legacyRoot, 'miniapps'), join(duneRootHostPath, 'miniapps'))
+  moveAgentPersistencePathIfNeeded(join(legacyRoot, '.claude'), join(duneRootHostPath, '.claude'))
+  moveAgentPersistencePathIfNeeded(join(legacyRoot, '.claude.json'), join(duneRootHostPath, '.claude.json'))
+}
+
+function ensureAgentRuntimeHostPaths(agentId: string): AgentRuntimeHostPaths {
+  const duneRootHostPath = getAgentDuneHostPath(agentId)
+  migrateLegacyAgentPersistence(agentId, duneRootHostPath)
+
+  const memoryHostPath = join(duneRootHostPath, 'memory')
+  const miniappHostPath = join(duneRootHostPath, 'miniapps')
+  const claudeHostPath = getAgentClaudeHostPath(agentId)
+  const claudeStateHostPath = getAgentClaudeStateHostPath(agentId)
+  const communicationHostPath = getAgentCommunicationHostPath(agentId)
+
+  mkdirSync(duneRootHostPath, { recursive: true })
+  mkdirSync(memoryHostPath, { recursive: true })
+  mkdirSync(miniappHostPath, { recursive: true })
+  mkdirSync(claudeHostPath, { recursive: true })
+  mkdirSync(communicationHostPath, { recursive: true })
+  if (!existsSync(claudeStateHostPath)) {
+    writeFileSync(claudeStateHostPath, '{}\n', 'utf-8')
+  }
+
+  return {
+    duneRootHostPath,
+    memoryHostPath,
+    miniappHostPath,
+    claudeHostPath,
+    claudeStateHostPath,
+    communicationHostPath,
+  }
+}
+
+type CommunicationDaemonAssetSyncResult = {
+  rootHostPath: string
+  proxyHostPath: string
+  mailboxDaemonHostPath: string
+  backendUrlResolverHostPath: string
+  endpointConfigHostPath: string
+  assetHash: string
+  changed: boolean
+}
+
+type BackendEndpointConfig = {
+  preferredUrl: string | null
+  urls: string[]
+  updatedAt: number
+}
+
+type BackendEndpointConfigSyncResult = {
+  hostPath: string
+  hash: string
+  changed: boolean
+}
+
+function serializeBackendEndpointConfig(config: BackendEndpointConfig): string {
+  return `${JSON.stringify({
+    preferredUrl: config.preferredUrl,
+    urls: config.urls,
+    updatedAt: config.updatedAt,
+  }, null, 2)}\n`
+}
+
+function syncBackendEndpointConfig(agentId: string, config: BackendEndpointConfig): BackendEndpointConfigSyncResult {
+  const runtimeHostPaths = ensureAgentRuntimeHostPaths(agentId)
+  const hostPath = join(runtimeHostPaths.communicationHostPath, 'backend-endpoints.json')
+  const content = serializeBackendEndpointConfig(config)
+  const existingContent = existsSync(hostPath)
+    ? readFileSync(hostPath, 'utf-8')
+    : null
+  const changed = existingContent !== content
+
+  if (changed) {
+    writeFileSync(hostPath, content, 'utf-8')
+  }
+
+  const hash = createHash('sha256')
+    .update(config.preferredUrl || '')
+    .update('\0')
+    .update(config.urls.join('\n'))
+    .digest('hex')
+
+  return { hostPath, hash, changed }
+}
+
+function syncCommunicationDaemonAssets(agentId: string): CommunicationDaemonAssetSyncResult {
+  const runtimeHostPaths = ensureAgentRuntimeHostPaths(agentId)
+  const rootHostPath = runtimeHostPaths.communicationHostPath
+  const proxyHostPath = join(rootHostPath, 'dune_proxy.py')
+  const mailboxDaemonHostPath = join(rootHostPath, 'mailbox_daemon.py')
+  const backendUrlResolverHostPath = join(rootHostPath, 'backend_url_resolver.py')
+  const endpointConfigHostPath = join(rootHostPath, 'backend-endpoints.json')
+  const proxyCode = readAgentMcpFile('dune_proxy.py')
+  const mailboxDaemonCode = readAgentMcpFile('mailbox_daemon.py')
+  const backendUrlResolverCode = readAgentMcpFile('backend_url_resolver.py')
+  const assets = [
+    { hostPath: proxyHostPath, content: proxyCode },
+    { hostPath: mailboxDaemonHostPath, content: mailboxDaemonCode },
+    { hostPath: backendUrlResolverHostPath, content: backendUrlResolverCode },
+  ]
+
+  mkdirSync(rootHostPath, { recursive: true })
+
+  let changed = false
+  for (const asset of assets) {
+    const existingContent = existsSync(asset.hostPath)
+      ? readFileSync(asset.hostPath, 'utf-8')
+      : null
+    if (existingContent === asset.content) continue
+    writeFileSync(asset.hostPath, asset.content, 'utf-8')
+    changed = true
+  }
+
+  const assetHash = createHash('sha256')
+    .update(proxyCode)
+    .update('\0')
+    .update(mailboxDaemonCode)
+    .update('\0')
+    .update(backendUrlResolverCode)
+    .digest('hex')
+
+  return {
+    rootHostPath,
+    proxyHostPath,
+    mailboxDaemonHostPath,
+    backendUrlResolverHostPath,
+    endpointConfigHostPath,
+    assetHash,
+    changed,
+  }
+}
+
+export function __syncCommunicationDaemonAssetsForTests(agentId: string): CommunicationDaemonAssetSyncResult {
+  return syncCommunicationDaemonAssets(agentId)
 }
 
 function collectFilesRecursive(rootDir: string, prefix = ''): string[] {
@@ -726,11 +1076,19 @@ function syncAgentSkills(agentId: string): void {
   const hostSkillsRoot = getAgentSkillsHostPath(agentId)
   mkdirSync(hostSkillsRoot, { recursive: true })
 
-  for (const skillName of AGENT_SKILLS) {
+  const agent = agentStore.getAgent(agentId)
+  const enabledSkills = getBuiltinAgentSkillNames(agent)
+
+  for (const skillName of enabledSkills) {
     const sourceDir = join(AGENT_SKILLS_SOURCE_DIR, skillName)
     const targetDir = join(hostSkillsRoot, skillName)
     const changed = syncSkillDirectory(sourceDir, targetDir)
     console.log(`${changed ? 'Synced' : 'Verified'} agent skill "${skillName}" for agent ${agentId}`)
+  }
+
+  for (const skillName of AGENT_SKILLS) {
+    if (enabledSkills.includes(skillName)) continue
+    rmSync(join(hostSkillsRoot, skillName), { recursive: true, force: true })
   }
 }
 
@@ -843,6 +1201,8 @@ async function ensureMiniappNginxConfiguredInBox(box: SimpleBox, agentId: string
 
 /** Run a command with real-time stdout streaming via BoxLite's low-level exec API.
  *  Each stdout line triggers the onStdoutLine callback immediately — no buffering. */
+const ABORTED_SENTINEL = Symbol('aborted')
+
 async function streamingExec(
   box: SimpleBox,
   cmd: string,
@@ -850,16 +1210,21 @@ async function streamingExec(
   env: Record<string, string>,
   onStdoutLine: (line: string) => void,
   timeoutMs = 300_000,
-): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  onExecutionStart?: (execution: { kill: () => Promise<void> } | null) => void,
+  abortSignal?: Promise<void>,
+): Promise<{ exitCode: number; stdout: string; stderr: string; aborted?: boolean }> {
   // Access the low-level JsBox for streaming (SimpleBox._ensureBox is protected)
   const rawBox = await (box as any)._ensureBox()
   const envArray = Object.entries(env).map(([k, v]) => [k, v])
   const execution = await rawBox.exec(cmd, args, envArray, false)
+  onExecutionStart?.(execution)
 
   const stdoutLines: string[] = []
   const stderrLines: string[] = []
 
   let timedOut = false
+  let aborted = false
+  const abortPromise = abortSignal?.then(() => ABORTED_SENTINEL)
   let inactivityTimer: ReturnType<typeof setTimeout> | null = null
   const resetTimer = () => {
     if (inactivityTimer) clearTimeout(inactivityTimer)
@@ -887,9 +1252,10 @@ async function streamingExec(
       let buffer = ''
       let lineCount = 0
       while (true) {
-        const chunk = await stdoutStream.next()
-        if (chunk === null) {
-          // Flush any remaining buffered data as a final line
+        const next = stdoutStream.next()
+        const chunk = abortPromise ? await Promise.race([next, abortPromise]) : await next
+        if (chunk === ABORTED_SENTINEL || chunk === null) {
+          if (chunk === ABORTED_SENTINEL) aborted = true
           if (buffer) {
             lineCount++
             stdoutLines.push(buffer)
@@ -910,19 +1276,33 @@ async function streamingExec(
           resetTimer()
         }
       }
-      console.log(`[streamingExec] stdout total lines: ${lineCount}`)
+      console.log(`[streamingExec] stdout total lines: ${lineCount}${aborted ? ' (aborted)' : ''}`)
     }
 
     const readStderr = async () => {
       if (!stderrStream) return
       while (true) {
-        const line = await stderrStream.next()
-        if (line === null) break
-        stderrLines.push(line)
+        const next = stderrStream.next()
+        const line = abortPromise ? await Promise.race([next, abortPromise]) : await next
+        if (line === ABORTED_SENTINEL || line === null) break
+        stderrLines.push(line as string)
       }
     }
 
     await Promise.all([readStdout(), readStderr()])
+
+    if (aborted) {
+      // Kill the execution and wait briefly so it doesn't linger in the container
+      // and conflict with the next CLI invocation (e.g. --continue session lock)
+      await execution.kill().catch(() => {})
+      return {
+        exitCode: 130,
+        stdout: stdoutLines.join(''),
+        stderr: stderrLines.join(''),
+        aborted: true,
+      }
+    }
+
     const result = await execution.wait()
 
     if (timedOut) {
@@ -935,6 +1315,7 @@ async function streamingExec(
       stderr: stderrLines.join(''),
     }
   } finally {
+    onExecutionStart?.(null)
     if (inactivityTimer) clearTimeout(inactivityTimer)
   }
 }
@@ -1050,9 +1431,203 @@ async function deployFile(box: SimpleBox, content: string, destPath: string): Pr
   // Base64 encode to avoid shell escaping issues and large argument limits.
   // base64 output is alphanumeric+/= — safe inside single quotes.
   const b64 = Buffer.from(content).toString('base64')
-  await retriedExec(box, 'bash', ['-c',
+  await execChecked(box, 'bash', ['-c',
     `printf '%s' '${b64}' | base64 -d > ${destPath} && chown abc:abc ${destPath}`
   ], { DISPLAY: ':1' })
+}
+
+async function prepareAgentConfigFacadeInBox(box: SimpleBox): Promise<void> {
+  await execChecked(
+    box,
+    'python3',
+    [
+      '-c',
+      `import os, pathlib, shutil, sys
+dune_root, dune_memory, dune_miniapps, dune_claude, dune_state, memory_link, miniapps_link, claude_link, state_link = sys.argv[1:]
+for path in (dune_root, dune_memory, dune_miniapps, dune_claude, os.path.join(dune_claude, 'skills')):
+    os.makedirs(path, exist_ok=True)
+if not os.path.exists(dune_state):
+    pathlib.Path(dune_state).write_text('{}\\n')
+for link_path, target_path in (
+    (memory_link, dune_memory),
+    (miniapps_link, dune_miniapps),
+    (claude_link, dune_claude),
+    (state_link, dune_state),
+):
+    if os.path.lexists(link_path):
+        if os.path.islink(link_path) or os.path.isfile(link_path):
+            os.unlink(link_path)
+        else:
+            shutil.rmtree(link_path)
+    os.symlink(target_path, link_path)
+`,
+      AGENT_DUNE_VOLUME_PATH,
+      AGENT_DUNE_MEMORY_PATH,
+      AGENT_DUNE_MINIAPPS_PATH,
+      AGENT_DUNE_CLAUDE_PATH,
+      AGENT_DUNE_CLAUDE_STATE_PATH,
+      AGENT_MEMORY_VOLUME_PATH,
+      AGENT_MINIAPP_VOLUME_PATH,
+      AGENT_CLAUDE_VOLUME_PATH,
+      CLAUDE_STATE_PATH,
+    ],
+    { DISPLAY: ':1' },
+    20_000,
+    2,
+  )
+
+  await retriedExec(
+    box,
+    'bash',
+    ['-c', `chown -R abc:abc ${AGENT_DUNE_VOLUME_PATH} 2>/dev/null; true`],
+    { DISPLAY: ':1' },
+    20_000,
+    2,
+  )
+}
+
+export async function __prepareAgentConfigFacadeInBoxForTests(box: SimpleBox): Promise<void> {
+  await prepareAgentConfigFacadeInBox(box)
+}
+
+function escapeShellSingleQuotes(value: string): string {
+  return value.replace(/'/g, "'\\''")
+}
+
+function buildEnvAssignments(values: Record<string, string | undefined>): string {
+  return Object.entries(values)
+    .filter(([, value]) => value !== undefined)
+    .map(([key, value]) => `${key}='${escapeShellSingleQuotes(value || '')}'`)
+    .join(' ')
+}
+
+function getPreferredBackendUrl(config: BackendEndpointConfig): string {
+  return config.preferredUrl || config.urls[0] || ''
+}
+
+async function startCommunicationDaemons(
+  box: SimpleBox,
+  agentId: string,
+  agentName: string,
+  endpointConfig: BackendEndpointConfig,
+): Promise<void> {
+  const backendUrl = getPreferredBackendUrl(endpointConfig)
+  if (!backendUrl) {
+    throw new Error(`No backend URL candidates available for agent ${agentId}`)
+  }
+
+  const proxyEnv = buildEnvAssignments({
+    DUNE_API_URL: backendUrl,
+    DUNE_API_ENDPOINTS_FILE: BACKEND_ENDPOINTS_CONFIG_GUEST_PATH,
+    DUNE_AGENT_ID: agentId,
+    DUNE_AGENT_NAME: agentName,
+  })
+  await retriedExec(
+    box,
+    'bash',
+    ['-c', `nohup runuser -u abc -- env ${proxyEnv} python3 ${DUNE_PROXY_GUEST_PATH} > /tmp/proxy.log 2>&1 &`],
+    { DISPLAY: ':1' },
+  )
+  console.log(`Dune proxy started for agent ${agentId}`)
+
+  const daemonEnv = buildEnvAssignments({
+    DUNE_API_URL: backendUrl,
+    DUNE_API_ENDPOINTS_FILE: BACKEND_ENDPOINTS_CONFIG_GUEST_PATH,
+    DUNE_AGENT_ID: agentId,
+  })
+  await retriedExec(
+    box,
+    'bash',
+    ['-c', `nohup runuser -u abc -- env ${daemonEnv} python3 ${MAILBOX_DAEMON_GUEST_PATH} > /tmp/mailbox.log 2>&1 &`],
+    { DISPLAY: ':1' },
+  )
+  console.log(`Mailbox daemon started for agent ${agentId}`)
+}
+
+async function stopCommunicationDaemons(box: SimpleBox): Promise<void> {
+  await timedExec(
+    box,
+    'bash',
+    ['-c', `pkill -f "${DUNE_PROXY_PROCESS_PATTERN}" 2>/dev/null; pkill -f "${MAILBOX_DAEMON_PROCESS_PATTERN}" 2>/dev/null; true`],
+    { DISPLAY: ':1' },
+    10_000,
+  )
+}
+
+type CommunicationDaemonProcessStatus = {
+  proxyRunning: boolean
+  mailboxRunning: boolean
+}
+
+async function getCommunicationDaemonProcessStatus(box: SimpleBox): Promise<CommunicationDaemonProcessStatus> {
+  const result = await retriedExec(
+    box,
+    'bash',
+    ['-lc',
+      `proxy=0; mailbox=0; pgrep -f "${DUNE_PROXY_PROCESS_PATTERN}" >/dev/null && proxy=1; pgrep -f "${MAILBOX_DAEMON_PROCESS_PATTERN}" >/dev/null && mailbox=1; printf 'proxy=%s\\nmailbox=%s\\n' "$proxy" "$mailbox"`
+    ],
+    { DISPLAY: ':1' },
+  )
+
+  return {
+    proxyRunning: /proxy=1/.test(result.stdout),
+    mailboxRunning: /mailbox=1/.test(result.stdout),
+  }
+}
+
+type ReconcileCommunicationDaemonsOptions = {
+  endpointConfig: BackendEndpointConfig
+  daemonAssetHash: string
+  force?: boolean
+}
+
+async function reconcileCommunicationDaemons(
+  running: RunningAgent,
+  options: ReconcileCommunicationDaemonsOptions,
+): Promise<boolean> {
+  const { endpointConfig, daemonAssetHash, force = false } = options
+  const configSync = syncBackendEndpointConfig(running.agent.id, endpointConfig)
+  const backendUrl = getPreferredBackendUrl(endpointConfig)
+  let shouldRestart = force
+
+  if (!shouldRestart) {
+    shouldRestart = daemonAssetHash !== (running.daemonAssetHash || '')
+  }
+
+  if (!shouldRestart) {
+    const processStatus = await getCommunicationDaemonProcessStatus(running.box)
+    shouldRestart = !processStatus.proxyRunning || !processStatus.mailboxRunning
+  }
+
+  running.backendUrl = backendUrl
+  running.backendCandidates = [...endpointConfig.urls]
+  running.daemonAssetHash = daemonAssetHash
+  running.daemonConfigHash = configSync.hash
+
+  if (!shouldRestart) {
+    return false
+  }
+
+  if (!backendUrl) {
+    throw new Error(`No backend URL candidates available for agent ${running.agent.id}`)
+  }
+
+  await stopCommunicationDaemons(running.box)
+  await startCommunicationDaemons(running.box, running.agent.id, running.agent.name, endpointConfig)
+  return true
+}
+
+export async function __reconcileCommunicationDaemonsForTests(
+  running: RunningAgent,
+  options: ReconcileCommunicationDaemonsOptions,
+): Promise<boolean> {
+  return reconcileCommunicationDaemons(running, options)
+}
+
+export async function __getCommunicationDaemonProcessStatusForTests(
+  box: SimpleBox,
+): Promise<CommunicationDaemonProcessStatus> {
+  return getCommunicationDaemonProcessStatus(box)
 }
 
 // ── Startup helpers ─────────────────────────────────────────────────────
@@ -1217,21 +1792,17 @@ export async function startAgent(agentId: string): Promise<void> {
   Object.assign(env, buildClaudeCliAuthEnvValues())
 
   let backendUrl = ''
+  let backendCandidates: string[] = []
+  let daemonConfigHash: string | undefined
   let sandboxId = runtimeState.sandboxId
   let box: SimpleBox | null = null
   try {
-    // Ensure host storage directories exist for volume mounts
-    const memoryHostPath = join(config.agentsRoot, agentId, 'memory')
-    const miniappHostPath = join(config.agentsRoot, agentId, 'miniapps')
-    const skillsHostPath = getAgentSkillsHostPath(agentId)
-    mkdirSync(memoryHostPath, { recursive: true })
-    mkdirSync(miniappHostPath, { recursive: true })
+    // Ensure host storage exists and legacy agent data is migrated into the .dune root.
+    const runtimeHostPaths = ensureAgentRuntimeHostPaths(agentId)
+    const daemonAssets = syncCommunicationDaemonAssets(agentId)
     syncAgentSkills(agentId)
-    const baseVolumes: RuntimeVolumeSpec[] = [
-      { hostPath: memoryHostPath, guestPath: '/config/memory' },
-      { hostPath: miniappHostPath, guestPath: '/config/miniapps' },
-      { hostPath: skillsHostPath, guestPath: AGENT_SKILLS_VOLUME_PATH },
-    ]
+    // Persist all agent state through the single mounted .dune root.
+    const baseVolumes = buildAgentRuntimeBaseVolumes(runtimeHostPaths)
     const runtimeVolumes = buildAgentRuntimeVolumes(agentId, baseVolumes)
     const hasConfiguredMounts = runtimeVolumes.length > baseVolumes.length
     if (hasConfiguredMounts && !isPendingSandboxId(runtimeState.sandboxId)) {
@@ -1326,16 +1897,16 @@ export async function startAgent(agentId: string): Promise<void> {
     // Verify Claude CLI is available (pre-installed in SkillBox image)
     await ensureCliInstalled(box)
 
+    emitStartupLog(agentId, 'Preparing persistent config...')
+    await prepareAgentConfigFacadeInBox(box)
+    emitStartupLog(agentId, 'Persistent config ready.')
+
     emitStartupLog(agentId, 'Ensuring miniapp nginx routes...')
     await ensureMiniappNginxConfiguredInBox(box, agentId)
     emitStartupLog(agentId, 'Miniapp nginx route ensured.')
 
     // Write MCP config for the computer tool (separate file — CLI overwrites $HOME/.claude.json)
     await retriedExec(box, 'bash', ['-c', `echo '${MCP_CONFIG}' > ${MCP_CONFIG_PATH} && chown abc:abc ${MCP_CONFIG_PATH}`], { DISPLAY: ':1' })
-
-    // Fix .claude directory permissions — CLI may have created it as root during version check,
-    // but sendMessage() runs as abc user (needed for --dangerously-skip-permissions).
-    await retriedExec(box, 'bash', ['-c', 'chown -R abc:abc /config/.claude 2>/dev/null; chown abc:abc /config/.claude.json 2>/dev/null; true'], { DISPLAY: ':1' })
 
     emitStartupLog(agentId, 'Updating Claude settings...')
     await upsertClaudeSettingsInBox(box, agentId)
@@ -1345,46 +1916,32 @@ export async function startAgent(agentId: string): Promise<void> {
     await retriedExec(
       box,
       'bash',
-      ['-c', 'mkdir -p /config/memory /config/miniapps /config/.claude/skills && chown -R abc:abc /config/memory /config/miniapps /config/.claude/skills'],
+      ['-c', `mkdir -p ${AGENT_DUNE_MEMORY_PATH} ${AGENT_DUNE_MINIAPPS_PATH} ${AGENT_DUNE_CLAUDE_PATH}/skills && chown -R abc:abc ${AGENT_DUNE_VOLUME_PATH}`],
       { DISPLAY: ':1' },
     )
 
     checkAborted(signal, agentId)
     emitStartupLog(agentId, 'Deploying communication daemons...')
 
-    // ── Deploy Dune proxy + mailbox daemon ──────────────────────────
+    // ── Start Dune proxy + mailbox daemon from persistent .dune assets ──────
     const backendPort = getBackendPort()
     if (backendPort > 0) {
       try {
-        backendUrl = await detectHostUrl(box, backendPort)
-        console.log(`Backend URL for agent ${agentId}: ${backendUrl}`)
+        const endpointConfig = await resolveBackendEndpointConfig(box, backendPort)
+        const configSync = syncBackendEndpointConfig(agentId, endpointConfig)
+        backendUrl = getPreferredBackendUrl(endpointConfig)
+        backendCandidates = [...endpointConfig.urls]
+        daemonConfigHash = configSync.hash
+        console.log(`Backend URL for agent ${agentId}: ${backendUrl || '(none)'} (${endpointConfig.urls.length} candidates)`)
+
+        if (backendUrl) {
+          await startCommunicationDaemons(box, agentId, agent.name, endpointConfig)
+        } else {
+          console.warn(`No backend URL candidates resolved for agent ${agentId} — proxy/daemon not deployed`)
+        }
       } catch (err: any) {
         console.warn(`Failed to detect host URL for agent ${agentId}: ${err.message} — proxy/daemon not deployed`)
       }
-    }
-    if (backendUrl) {
-
-      // Deploy proxy and daemon Python files
-      const proxyCode = readAgentMcpFile('dune_proxy.py')
-      const daemonCode = readAgentMcpFile('mailbox_daemon.py')
-      await Promise.all([
-        deployFile(box, proxyCode, '/config/dune_proxy.py'),
-        deployFile(box, daemonCode, '/config/mailbox_daemon.py'),
-      ])
-
-      // Start proxy (background, as abc user)
-      const proxyEnv = `DUNE_API_URL=${backendUrl} DUNE_AGENT_ID=${agentId} DUNE_AGENT_NAME='${agent.name.replace(/'/g, "'\\''")}'`
-      await retriedExec(box, 'bash', ['-c',
-        `nohup runuser -u abc -- env ${proxyEnv} python3 /config/dune_proxy.py > /tmp/proxy.log 2>&1 &`
-      ], { DISPLAY: ':1' })
-      console.log(`Dune proxy started for agent ${agentId}`)
-
-      // Start mailbox daemon (background, as abc user)
-      const daemonEnv = `DUNE_API_URL=${backendUrl} DUNE_AGENT_ID=${agentId}`
-      await retriedExec(box, 'bash', ['-c',
-        `nohup runuser -u abc -- env ${daemonEnv} python3 /config/mailbox_daemon.py > /tmp/mailbox.log 2>&1 &`
-      ], { DISPLAY: ':1' })
-      console.log(`Mailbox daemon started for agent ${agentId}`)
     } else if (backendPort <= 0) {
       console.warn(`Backend port not detected — proxy/daemon not deployed for agent ${agentId}`)
     }
@@ -1417,10 +1974,16 @@ export async function startAgent(agentId: string): Promise<void> {
       guiHttpPort,
       guiHttpsPort,
       backendUrl,
+      backendCandidates,
+      daemonAssetHash: daemonAssets.assetHash,
+      daemonConfigHash,
       cliInstalled: true,
       hasSession: runtimeState.hasSession,
       startedAt,
       thinkingSince: 0,
+      currentExecution: null,
+      interruptRequested: false,
+      interruptAbort: null,
     })
 
     setAgentStatus(agentId, 'idle', { source: 'start-agent', broadcast: false })
@@ -1478,7 +2041,7 @@ export async function stopAgent(agentId: string): Promise<void> {
         await Promise.race([
           _sendMessageInner(agentId, running, [{
             authorName: 'System',
-            content: 'You are being shut down. Save any important information from this session to your memory files in /config/memory/ now. Be concise — you have limited time.',
+            content: STOP_AGENT_SHUTDOWN_PROMPT,
           }]),
           new Promise<string>((resolve) => setTimeout(() => resolve('[TIMEOUT]'), 30_000)),
         ])
@@ -1511,6 +2074,67 @@ export async function stopAgent(agentId: string): Promise<void> {
   setAgentStatus(agentId, 'stopped', { source: 'stop-agent', broadcast: false })
 }
 
+export async function interruptAgentWorkflow(agentId: string): Promise<boolean> {
+  const running = runningAgents.get(agentId)
+  if (!running) return false
+  const hasActiveTurn = Boolean(running.currentExecution) || running.thinkingSince > 0 || agentLocks.has(agentId)
+  if (!hasActiveTurn) return false
+
+  running.interruptRequested = true
+  triggerInterruptSignals(agentId, running)
+
+  // Safety net: if the abort signal + kill didn't finalize within 3s, force-reset
+  setTimeout(() => {
+    const agent = agentStore.getAgent(agentId)
+    if (!agent || (agent.status !== 'thinking' && agent.status !== 'responding')) return
+    console.warn(`[${agentId}] Interrupt safety timeout — force-resetting to idle`)
+    running.thinkingSince = 0
+    running.currentExecution = null
+    running.interruptRequested = false
+    running.interruptAbort = null
+    setAgentStatus(agentId, 'idle', { source: 'interrupt-timeout', reason: 'interrupt did not finalize within 3s' })
+    emitAgentLogEntries(agentId, [{
+      id: newEventId(),
+      agentId,
+      timestamp: Date.now(),
+      type: 'system',
+      data: { message: 'Workflow interrupted (forced timeout).' },
+    }])
+  }, 3_000)
+
+  return true
+}
+
+function triggerInterruptSignals(agentId: string, running: RunningAgent): void {
+  if (running.currentExecution) {
+    running.currentExecution.kill().then(() => {
+      console.log(`[${agentId}] execution.kill() succeeded`)
+    }).catch((err: any) => {
+      console.warn(`[${agentId}] execution.kill() failed: ${err?.message || err}`)
+    })
+  } else {
+    console.warn(`[${agentId}] interrupt: no currentExecution to kill`)
+  }
+
+  const interruptPattern = `/tmp/system-prompt-${agentId}.txt`
+  const interruptScript = [
+    `self="$$"`,
+    `targets="$(ps -eo pid=,args= | awk -v self="$self" 'index($0, "${interruptPattern}") && $1 != self { print $1 }')"`,
+    `if [ -n "$targets" ]; then`,
+    `  kill -KILL $targets 2>/dev/null || true`,
+    `fi`,
+  ].join('; ')
+  void running.box.exec('bash', ['-lc', interruptScript], { DISPLAY: ':1' }).catch((err: any) => {
+    console.warn(`[${agentId}] Failed to interrupt current workflow via process kill fallback: ${err?.message || err}`)
+  })
+
+  // Resolve the abort signal so streamingExec unblocks immediately
+  if (running.interruptAbort) {
+    running.interruptAbort.resolve()
+    running.interruptAbort = null
+  }
+}
+
 // Per-agent cooldown for idle todo reminders (prevents infinite DM loops)
 const todoReminderCooldowns = new Map<string, number>()
 const TODO_REMINDER_COOLDOWN_MS = 5 * 60_000 // 5 minutes
@@ -1519,36 +2143,427 @@ const TODO_REMINDER_SWEEP_INTERVAL_MS = 60_000 // 60 seconds
 // Per-agent lock to prevent concurrent sendMessage calls (orchestrator push + daemon poll overlap)
 const agentLocks = new Map<string, Promise<string>>()
 
-type TodoReminderKind = 'overdue' | 'no-pending'
+type TodoReminderKind = 'idle' | 'overdue' | 'no-pending'
 type TodoReminderPayload = { kind: TodoReminderKind; content: string }
-type TodoReminderEnqueue = (agentId: string, payload: TodoReminderPayload) => void
+type TodoReminderEnqueue = (agentId: string, payload: TodoReminderPayload, remindedAt: number) => void
+type TodoReminderMetadata = { kind: TodoReminderKind; remindedAt: number }
+type LeaderPdca = {
+  thesis: 'unchanged' | 'revised'
+  plan: {
+    owner: string
+    deliverable: string
+    due: string
+    success: string
+  }
+  do: string
+  check: string
+  act: string
+  obstacle: 'cleared' | 'rerouted' | 'escalated' | 'exhausted'
+  outcome: 'advanced' | 'blocked'
+}
+type LeaderToolUse = {
+  toolName: string
+  input: unknown
+}
+type LeaderPolicyViolation = {
+  toolName: string
+  reason: string
+}
+type TodoReminderTurnResolution = {
+  consumeCooldown: boolean
+  allowImmediateRequeue: boolean
+  pdca: LeaderPdca | null
+  policyViolation: LeaderPolicyViolation | null
+}
 
-function buildTodoReminderPayload(agentId: string, now: number): TodoReminderPayload | null {
-  const lastReminder = todoReminderCooldowns.get(agentId) || 0
-  if (now - lastReminder <= TODO_REMINDER_COOLDOWN_MS) return null
+const LEADER_PDCA_TEMPLATE_LINES = [
+  'Leader PDCA',
+  'Thesis: unchanged|revised',
+  'Plan: owner=<agent|human>; deliverable=<one sentence>; due=<time|none>; success=<one sentence>',
+  'Do: <delegation/reassignment/escalation action taken this turn>',
+  'Check: <current evidence or status against success criteria>',
+  'Act: <next concrete control action>',
+  'Obstacle: cleared|rerouted|escalated|exhausted',
+  'Outcome: advanced|blocked',
+] as const
 
-  const pending = todoStore.getPendingTodosByAgent(agentId)
-  const overdue = pending.filter(t => t.dueAt !== undefined && isValidDueAtMs(t.dueAt) && t.dueAt <= now)
-  if (overdue.length > 0) {
-    const items = overdue.map(t => `- "${t.title}" (id: ${t.id}, due ${new Date(t.dueAt!).toLocaleString()})`).join('\n')
-    return {
-      kind: 'overdue',
-      content: `You have ${overdue.length} overdue todo(s):\n${items}\n\nTo mark done: curl -s -X PUT http://localhost:3200/api/todos/TODO_ID -H 'Content-Type: application/json' -d '{"status":"done"}'`,
+const LEADER_ALLOWED_READ_ONLY_TOOL_NAMES = new Set([
+  'Bash',
+  'Read',
+  'Glob',
+  'Grep',
+  'LS',
+  'TodoWrite',
+  'WebFetch',
+  'WebSearch',
+  'KillBash',
+])
+
+const LEADER_MUTATING_TOOL_NAMES = new Set([
+  'Edit',
+  'MultiEdit',
+  'Write',
+  'NotebookEdit',
+  'Task',
+  'computer',
+])
+
+function formatTodoForReminder(todo: Todo): string {
+  const lines = [
+    `- "${todo.title}" (id: ${todo.id}, due ${new Date(todo.dueAt).toLocaleString()})`,
+    `  originalTitle: ${JSON.stringify(todo.originalTitle)}`,
+  ]
+  if (todo.originalDescription) lines.push(`  originalDescription: ${JSON.stringify(todo.originalDescription)}`)
+  if (todo.description && todo.description !== todo.originalDescription) {
+    lines.push(`  currentDescription: ${JSON.stringify(todo.description)}`)
+  }
+  if (todo.nextPlan) lines.push(`  nextPlan: ${JSON.stringify(todo.nextPlan)}`)
+  return lines.join('\n')
+}
+
+function getLeaderPdcaFooterInstructions(): string[] {
+  return [
+    '- End your reply with this exact footer:',
+    ...LEADER_PDCA_TEMPLATE_LINES,
+  ]
+}
+
+function buildLeaderIdleTodoReminder(agent: Agent, pending: Todo[]): TodoReminderPayload {
+  const activeTodo = pending[0]
+  const activeTodoSummary = activeTodo
+    ? [
+        `Active todo: "${activeTodo.title}" (id: ${activeTodo.id})`,
+        `Original request: ${JSON.stringify(activeTodo.originalTitle)}`,
+        activeTodo.originalDescription ? `Original details: ${JSON.stringify(activeTodo.originalDescription)}` : null,
+        activeTodo.nextPlan ? `Current nextPlan: ${JSON.stringify(activeTodo.nextPlan)}` : 'Current nextPlan: (empty)',
+      ].filter(Boolean).join('\n')
+    : 'Active todo: none'
+
+  return {
+    kind: 'idle',
+    content: [
+      `You are idle as the ${agent.role}. Use dune-leader now.`,
+      '',
+      'Pending coordination todos:',
+      pending.map(formatTodoForReminder).join('\n'),
+      '',
+      activeTodoSummary,
+      '',
+      'Run one leader-only PDCA cycle:',
+      '- Reassess the mission from available evidence.',
+      `- Revise ${LEADER_THESIS_MEMORY_PATH} only if the mission materially changed.`,
+      '- Select one objective and define the owner, deliverable, due time, and success criteria.',
+      '- Delegate or reassign the work through a follower-owned todo plus a concise instruction message.',
+      '- Review follower replies, todo state, or delivered artifacts against the stated success criteria.',
+      '- Accept, redirect, escalate, or reassign based on that review.',
+      '- Do not implement directly yourself. If no suitable follower exists, create or recruit one before delegating.',
+      `- Use nextPlan and ${TODO_HANDOFF_MEMORY_PATH} only as optional operational notes after the cycle.`,
+      '- Before claiming Outcome: blocked, exhaust obstacle-removal in order: re-scope, reassign, recruit, gather context, reroute, escalate sideways, then escalate to human as last resort.',
+      '- If you escalate to a human, also assign any parallelizable work and set a concrete follow-up action.',
+      '- Do not passively wait after escalation.',
+      ...getLeaderPdcaFooterInstructions(),
+      'Use your dune-leader skill plus dune-communication, dune-team-manager, dune-todo, or the local Dune API as needed.',
+    ].join('\n'),
+  }
+}
+
+function buildFollowerIdleTodoReminder(agent: Agent, pending: Todo[]): TodoReminderPayload {
+  return {
+    kind: 'idle',
+    content: [
+      `You are idle as the ${agent.role}. Preserve the original todo request before you pause.`,
+      '',
+      'Pending todos:',
+      pending.map(formatTodoForReminder).join('\n'),
+      '',
+      'Before you drift:',
+      '- Preserve originalTitle and originalDescription exactly. They are the immutable original request snapshot.',
+      '- Put progress in title, description, nextPlan, or memory instead of overwriting the original request snapshot.',
+      `- Refresh ${TODO_HANDOFF_MEMORY_PATH} with an "Original Request Snapshot" that lists each pending todo ID, the original request, and any current working notes.`,
+      `- If you no longer have a pending heartbeat, create one due about ${TODO_HEARTBEAT_DELAY_MINUTES} minutes from now.`,
+      'Use your dune-todo skill and the local Dune API.',
+    ].join('\n'),
+  }
+}
+
+function buildOverdueTodoReminder(agent: Agent, overdue: Todo[]): TodoReminderPayload {
+  const roleSpecificTail = agent.role === 'leader'
+    ? [
+        '- Use dune-leader to run one follow-up PDCA cycle after triage.',
+        `- Revise ${LEADER_THESIS_MEMORY_PATH} only if the mission materially changed.`,
+        '- Treat overdue leader todos as coordination follow-ups, not implementation work.',
+        '- Follow up with the owner, reassign, escalate, or recruit a follower if none is suitable.',
+        '- Do not implement directly yourself.',
+        `- Use nextPlan and ${TODO_HANDOFF_MEMORY_PATH} only as optional operational notes after the cycle.`,
+        '- Before claiming Outcome: blocked, exhaust obstacle-removal in order: re-scope, reassign, recruit, gather context, reroute, escalate sideways, then escalate to human as last resort.',
+        '- If you escalate to a human, also assign any parallelizable work and set a concrete follow-up action.',
+        '- Do not passively wait after escalation.',
+        ...getLeaderPdcaFooterInstructions(),
+      ]
+    : [
+        '- After you triage the overdue todo(s), preserve originalTitle and originalDescription for any remaining pending work.',
+        `- Refresh ${TODO_HANDOFF_MEMORY_PATH} with the original request snapshot for the pending work that remains.`,
+      ]
+
+  return {
+    kind: 'overdue',
+    content: [
+      `You are idle as the ${agent.role} and you have ${overdue.length} overdue todo(s):`,
+      overdue.map(formatTodoForReminder).join('\n'),
+      '',
+      'Triage them now:',
+      '- Mark completed work done or reschedule it with a new dueAt.',
+      ...roleSpecificTail,
+      `Use your ${agent.role === 'leader' ? 'dune-leader skill plus dune-communication, dune-team-manager, dune-todo, or the local Dune API' : 'dune-todo skill and the local Dune API'}.`,
+    ].join('\n'),
+  }
+}
+
+function buildNoPendingTodoReminder(agent: Agent): TodoReminderPayload {
+  const roleSpecificTail = agent.role === 'leader'
+    ? [
+        '- Use dune-leader to reassess the mission and pick one delegable objective now.',
+        `- Revise ${LEADER_THESIS_MEMORY_PATH} only if the mission materially changed.`,
+        '- Define the owner, deliverable, due time, and success criteria for that objective.',
+        '- If no suitable follower exists, create or recruit one before delegating.',
+        '- Assign the work through a follower-owned todo plus a concise instruction message.',
+        '- Do not implement directly yourself.',
+        `- Use nextPlan and ${TODO_HANDOFF_MEMORY_PATH} only as optional operational notes after the cycle.`,
+        '- Before claiming Outcome: blocked, exhaust obstacle-removal in order: re-scope, reassign, recruit, gather context, reroute, escalate sideways, then escalate to human as last resort.',
+        '- If you escalate to a human, also assign any parallelizable work and set a concrete follow-up action.',
+        '- Do not passively wait after escalation.',
+        ...getLeaderPdcaFooterInstructions(),
+      ]
+    : [
+        '- Treat the title and description you create as the original request snapshot for the new heartbeat todo.',
+        `- Refresh ${TODO_HANDOFF_MEMORY_PATH} with the original request snapshot for the new todo.`,
+      ]
+
+  return {
+    kind: 'no-pending',
+    content: [
+      `You are idle as the ${agent.role} and you have no pending todos.`,
+      ...(agent.role === 'leader'
+        ? roleSpecificTail
+        : [
+            `Create a new pending heartbeat todo due about ${TODO_HEARTBEAT_DELAY_MINUTES} minutes from now.`,
+            '- The todo title and description become the immutable original request snapshot automatically.',
+            ...roleSpecificTail,
+          ]),
+      `Use your ${agent.role === 'leader' ? 'dune-leader skill plus dune-communication, dune-team-manager, dune-todo, or the local Dune API' : 'dune-todo skill and the local Dune API'}.`,
+    ].join('\n'),
+  }
+}
+
+const PASSIVE_WAIT_PATTERN = /\b(wait\s+for|waiting\s+for|await\s+user|now\s+waiting|idle\s+until|just\s+wait)\b/i
+
+function parseLeaderPdca(response: string): LeaderPdca | null {
+  const lines = response
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean)
+
+  if (lines.length < 8) return null
+
+  const footer = lines.slice(-8)
+  if (!/^Leader PDCA$/i.test(footer[0] || '')) return null
+
+  const thesisMatch = (footer[1] || '').match(/^Thesis:\s*(unchanged|revised)$/i)
+  const planMatch = (footer[2] || '').match(/^Plan:\s*owner=(.+?);\s*deliverable=(.+?);\s*due=(.+?);\s*success=(.+)$/i)
+  const doMatch = (footer[3] || '').match(/^Do:\s*(.+)$/i)
+  const checkMatch = (footer[4] || '').match(/^Check:\s*(.+)$/i)
+  const actMatch = (footer[5] || '').match(/^Act:\s*(.+)$/i)
+  const obstacleMatch = (footer[6] || '').match(/^Obstacle:\s*(cleared|rerouted|escalated|exhausted)$/i)
+  const outcomeMatch = (footer[7] || '').match(/^Outcome:\s*(advanced|blocked)$/i)
+
+  if (!thesisMatch || !planMatch || !doMatch || !checkMatch || !actMatch || !obstacleMatch || !outcomeMatch) return null
+
+  const owner = planMatch[1]?.trim() || ''
+  const deliverable = planMatch[2]?.trim() || ''
+  const due = planMatch[3]?.trim() || ''
+  const success = planMatch[4]?.trim() || ''
+  const doStep = doMatch[1]?.trim() || ''
+  const check = checkMatch[1]?.trim() || ''
+  const act = actMatch[1]?.trim() || ''
+  const obstacle = obstacleMatch[1].toLowerCase() as LeaderPdca['obstacle']
+  const outcome = outcomeMatch[1].toLowerCase() as LeaderPdca['outcome']
+
+  if (!owner || !deliverable || !due || !success || !doStep || !check || !act) return null
+
+  // Outcome: blocked is valid only with Obstacle: exhausted
+  if (outcome === 'blocked' && obstacle !== 'exhausted') return null
+
+  // Passive wait wording in Do or Act is invalid
+  if (PASSIVE_WAIT_PATTERN.test(doStep) || PASSIVE_WAIT_PATTERN.test(act)) return null
+
+  return {
+    thesis: thesisMatch[1].toLowerCase() as LeaderPdca['thesis'],
+    plan: {
+      owner,
+      deliverable,
+      due,
+      success,
+    },
+    do: doStep,
+    check,
+    act,
+    obstacle,
+    outcome,
+  }
+}
+
+function extractLeaderBashCommand(input: unknown): string {
+  if (typeof input === 'string') return input
+  if (input && typeof input === 'object') {
+    for (const key of ['command', 'cmd', 'script', 'text', 'input']) {
+      const value = (input as Record<string, unknown>)[key]
+      if (typeof value === 'string') return value
     }
   }
+  return JSON.stringify(input ?? '')
+}
 
-  if (pending.length === 0) {
+function isLeaderMemoryOnlyCommand(command: string): boolean {
+  const normalized = command.toLowerCase()
+  if (!/(\/config\/memory\/leader-thesis\.md|\/config\/memory\/todo-handoff\.md)/.test(normalized)) {
+    return false
+  }
+  return !/(\/workspace|packages\/|src\/|dist\/|\/config\/miniapps)/.test(normalized)
+}
+
+function isLeaderCoordinationShellCommand(command: string): boolean {
+  const normalized = command.toLowerCase()
+  if (/\/skills\/dune-(communication|team-manager|todo)\//.test(normalized)) return true
+  if (/(localhost|127\.0\.0\.1):3200/.test(normalized)) {
+    return !/(\/host\/v1\/exec|\/sandboxes\/v1|\/miniapps\/)/.test(normalized)
+  }
+  return isLeaderMemoryOnlyCommand(command)
+}
+
+function isLeaderReadOnlyShellCommand(command: string): boolean {
+  const normalized = command.toLowerCase().trim()
+  const readOnlyPrefixes = [
+    'ls', 'pwd', 'cat', 'rg', 'grep', 'find', 'sed -n', 'head', 'tail', 'wc',
+    'stat', 'date', 'printenv', 'env', 'ps', 'jq', 'curl ', 'python3 -c "import json',
+  ]
+  if (!readOnlyPrefixes.some(prefix => normalized.startsWith(prefix))) return false
+  return !detectLeaderShellMutation(command)
+}
+
+function detectLeaderShellMutation(command: string): string | null {
+  const normalized = command.toLowerCase()
+  if (/\b(rm|mv|cp|mkdir|touch|chmod|chown|patch|make|pnpm|npm|yarn)\b/.test(normalized)) {
+    return 'mutating shell command'
+  }
+  if (/git\s+(apply|commit|checkout|merge|rebase)\b/.test(normalized)) {
+    return 'git mutation command'
+  }
+  if (/sed\s+-i\b|perl\s+-pi\b|write_text\(|write_bytes\(|open\([^)]*,\s*['"][wa]/.test(normalized)) {
+    return 'file mutation command'
+  }
+  const redirectMatch = command.match(/(^|[^0-9])>>?\s*([^\s]+)/)
+  if (redirectMatch) {
+    const target = redirectMatch[2]?.trim() || ''
+    if (!/^\/config\/memory\/(leader-thesis|todo-handoff)\.md$/.test(target)) {
+      return `redirected write to ${target}`
+    }
+  }
+  return null
+}
+
+function detectLeaderPolicyViolation(toolUses: LeaderToolUse[]): LeaderPolicyViolation | null {
+  for (const toolUse of toolUses) {
+    const toolName = (toolUse.toolName || '').trim()
+    if (!toolName) continue
+
+    if (toolName === 'Bash') {
+      const command = extractLeaderBashCommand(toolUse.input)
+      if (isLeaderCoordinationShellCommand(command) || isLeaderReadOnlyShellCommand(command)) {
+        continue
+      }
+      const mutationReason = detectLeaderShellMutation(command)
+      return {
+        toolName,
+        reason: mutationReason
+          ? `Direct implementation shell work is not allowed for leaders: ${mutationReason}.`
+          : 'Leaders may only use Bash for read-only inspection, coordination commands, or leader memory updates.',
+      }
+    }
+
+    if (LEADER_ALLOWED_READ_ONLY_TOOL_NAMES.has(toolName)) continue
+
+    if (LEADER_MUTATING_TOOL_NAMES.has(toolName)) {
+      return {
+        toolName,
+        reason: `Direct implementation tool use is not allowed for leaders: ${toolName}.`,
+      }
+    }
+
     return {
-      kind: 'no-pending',
-      content: 'You have no pending todos. You MUST always have at least one pending todo — it is your heartbeat. Create a todo now with a dueAt in the near future (e.g. 30 minutes from now). Use your dune-todo skill.',
+      toolName,
+      reason: `Leaders may only use coordination or read-only tools, but used ${toolName}.`,
     }
   }
 
   return null
 }
 
-const defaultTodoReminderEnqueue: TodoReminderEnqueue = (agentId, payload) => {
-  sendMessage(agentId, [{ authorName: 'System', content: payload.content }]).catch(err => {
+function finalizeTodoReminderTurn(
+  agentId: string,
+  agent: Pick<Agent, 'role'>,
+  reminder: TodoReminderMetadata | undefined,
+  response: string,
+  policyViolation: LeaderPolicyViolation | null = null,
+): TodoReminderTurnResolution {
+  if (!reminder) {
+    return { consumeCooldown: false, allowImmediateRequeue: true, pdca: null, policyViolation }
+  }
+
+  if (agent.role !== 'leader') {
+    return { consumeCooldown: false, allowImmediateRequeue: true, pdca: null, policyViolation }
+  }
+
+  const pdca = parseLeaderPdca(response)
+  const consumeCooldown = !policyViolation && pdca?.outcome === 'advanced'
+  if (consumeCooldown) {
+    todoReminderCooldowns.set(agentId, reminder.remindedAt)
+  }
+
+  return {
+    consumeCooldown,
+    allowImmediateRequeue: false,
+    pdca,
+    policyViolation,
+  }
+}
+
+function buildTodoReminderPayload(agentId: string, now: number): TodoReminderPayload | null {
+  const lastReminder = todoReminderCooldowns.get(agentId) || 0
+  if (now - lastReminder <= TODO_REMINDER_COOLDOWN_MS) return null
+
+  const agent = agentStore.getAgent(agentId)
+  if (!agent) return null
+
+  const pending = todoStore.getPendingTodosByAgent(agentId)
+  const overdue = pending.filter(t => t.dueAt !== undefined && isValidDueAtMs(t.dueAt) && t.dueAt <= now)
+  if (overdue.length > 0) {
+    return buildOverdueTodoReminder(agent, overdue)
+  }
+
+  if (pending.length === 0) {
+    return buildNoPendingTodoReminder(agent)
+  }
+
+  return agent.role === 'leader'
+    ? buildLeaderIdleTodoReminder(agent, pending)
+    : buildFollowerIdleTodoReminder(agent, pending)
+}
+
+const defaultTodoReminderEnqueue: TodoReminderEnqueue = (agentId, payload, remindedAt) => {
+  sendMessage(agentId, [{ authorName: 'System', content: payload.content }], {
+    todoReminder: { kind: payload.kind, remindedAt },
+  }).catch(err => {
     const action = payload.kind === 'overdue' ? 'remind' : 'nudge'
     console.warn(`[todo-idle] Failed to ${action} agent ${agentId}:`, err.message)
   })
@@ -1564,8 +2579,10 @@ function queueTodoReminderIfNeeded(
   const now = options.now ?? Date.now()
   const payload = buildTodoReminderPayload(agentId, now)
   if (!payload) return false
-  todoReminderCooldowns.set(agentId, now)
-  enqueueTodoReminder(agentId, payload)
+  if (agentStore.getAgent(agentId)?.role !== 'leader') {
+    todoReminderCooldowns.set(agentId, now)
+  }
+  enqueueTodoReminder(agentId, payload, now)
   return true
 }
 
@@ -1577,16 +2594,32 @@ const todoReminderSweepTimer = setInterval(() => {
 }, TODO_REMINDER_SWEEP_INTERVAL_MS)
 todoReminderSweepTimer.unref()
 
+let communicationDaemonRefreshInFlight = false
+const communicationDaemonRefreshTimer = setInterval(() => {
+  if (communicationDaemonRefreshInFlight) return
+  communicationDaemonRefreshInFlight = true
+  reconcileAllRunningCommunicationDaemons()
+    .catch((err: any) => {
+      console.warn('[communication-daemons] Periodic refresh failed:', err?.message || err)
+    })
+    .finally(() => {
+      communicationDaemonRefreshInFlight = false
+    })
+}, COMMUNICATION_DAEMON_REFRESH_INTERVAL_MS)
+communicationDaemonRefreshTimer.unref()
+
 type BuildClaudeCliCommandInput = {
   agentId: string
   promptFile: string
   systemPromptFile: string
   hasSession: boolean
   oauthToken: string
+  modelId: string | null
 }
 
 function buildClaudeCliCommand(input: BuildClaudeCliCommandInput): string {
   const oauthToken = input.oauthToken.trim()
+  const modelId = input.modelId?.trim() || ''
   return [
     `cat ${input.promptFile} |`,
     `runuser -u abc -- env`,
@@ -1599,6 +2632,7 @@ function buildClaudeCliCommand(input: BuildClaudeCliCommandInput): string {
     `DUNE_AGENT_ID=${input.agentId}`,
     ...(oauthToken ? [`CLAUDE_CODE_OAUTH_TOKEN=${oauthToken}`] : []),
     `claude --print`,
+    ...(modelId ? [`--model ${modelId}`] : []),
     `--dangerously-skip-permissions`,
     `--output-format stream-json`,
     `--verbose`,
@@ -1611,6 +2645,10 @@ function buildClaudeCliCommand(input: BuildClaudeCliCommandInput): string {
 
 export function __buildClaudeCliCommandForTests(input: BuildClaudeCliCommandInput): string {
   return buildClaudeCliCommand(input)
+}
+
+export function __getStopAgentShutdownPromptForTests(): string {
+  return STOP_AGENT_SHUTDOWN_PROMPT
 }
 
 export function __setTodoReminderEnqueueForTests(
@@ -1631,15 +2669,48 @@ export function __runTodoReminderCheckForTests(
 
 export function __resetTodoReminderStateForTests(): void {
   todoReminderCooldowns.clear()
+  agentLocks.clear()
   enqueueTodoReminder = defaultTodoReminderEnqueue
 }
 
+export function __parseLeaderPdcaForTests(response: string): LeaderPdca | null {
+  return parseLeaderPdca(response)
+}
+
+export function __detectLeaderPolicyViolationForTests(toolUses: LeaderToolUse[]): LeaderPolicyViolation | null {
+  return detectLeaderPolicyViolation(toolUses)
+}
+
+export function __finalizeTodoReminderTurnForTests(
+  agentId: string,
+  role: Agent['role'],
+  reminder: TodoReminderMetadata | undefined,
+  response: string,
+  policyViolation: LeaderPolicyViolation | null = null,
+): TodoReminderTurnResolution {
+  return finalizeTodoReminderTurn(agentId, { role }, reminder, response, policyViolation)
+}
+
+export function __getTodoReminderCooldownForTests(agentId: string): number | undefined {
+  return todoReminderCooldowns.get(agentId)
+}
+
+export function __setAgentLockForTests(agentId: string, locked: boolean): void {
+  if (locked) {
+    agentLocks.set(agentId, Promise.resolve('[test-lock]'))
+    return
+  }
+  agentLocks.delete(agentId)
+}
+
 export interface InputMetadata {
-  source: 'dm' | 'channel' | 'mailbox' | 'app_action'
+  source?: 'dm' | 'channel' | 'mailbox' | 'app_action'
   /** For channel input: structured data about which channels and messages the agent received */
   channels?: Array<{ name: string; messages: Array<{ author: string; content: string }> }>
   /** For DM: the user's message content */
   content?: string
+  /** For DM correlation between the frontend stash queue and the emitted user_message log entry. */
+  clientRequestId?: string
   /** For mailbox notifications: summary of the leased unread batch. */
   mailbox?: {
     unreadCount: number
@@ -1653,6 +2724,8 @@ export interface InputMetadata {
     payload?: unknown
     requestId?: string
   }
+  /** Internal metadata for idle reminder turns. */
+  todoReminder?: TodoReminderMetadata
 }
 
 export async function sendMessage(agentId: string, messages: Array<{ authorName: string; content: string }>, metadata?: InputMetadata): Promise<string> {
@@ -1674,12 +2747,35 @@ export async function sendMessage(agentId: string, messages: Array<{ authorName:
   }
 }
 
+function finalizeInterruptedRun(agentId: string, running: RunningAgent, metadata: Record<string, unknown> = {}): string {
+  running.hasSession = true
+  agentRuntimeStore.setAgentRuntimeHasSession(agentId, true)
+  running.thinkingSince = 0
+  emitRuntimeLog(agentId, 'lifecycle', 'claude_cli_interrupted', metadata)
+  emitAgentLogEntries(agentId, [{
+    id: newEventId(),
+    agentId,
+    timestamp: Date.now(),
+    type: 'system',
+    data: {
+      message: 'Workflow interrupted.',
+    },
+  }])
+  setAgentStatus(agentId, 'idle', { source: 'interrupt-agent', reason: 'workflow interrupted' })
+  return '[INTERRUPTED]'
+}
+
 async function _sendMessageInner(
   agentId: string,
   running: RunningAgent,
   messages: Array<{ authorName: string; content: string }>,
   metadata?: InputMetadata,
 ): Promise<string> {
+  running.interruptRequested = false
+  // Create a fresh abort signal for this turn — resolved by triggerInterruptSignals
+  let abortResolve: () => void
+  const abortPromise = new Promise<void>((resolve) => { abortResolve = resolve })
+  running.interruptAbort = { promise: abortPromise, resolve: abortResolve! }
   setAgentStatus(agentId, 'thinking', { source: 'send-message' })
   running.thinkingSince = Date.now()
 
@@ -1697,7 +2793,10 @@ async function _sendMessageInner(
           agentId,
           timestamp: Date.now(),
           type: 'user_message' as const,
-          data: { content: metadata.content || fullPrompt },
+          data: {
+            content: metadata.content || fullPrompt,
+            clientRequestId: metadata.clientRequestId || null,
+          },
         }
       : metadata?.source === 'mailbox'
         ? {
@@ -1745,7 +2844,8 @@ async function _sendMessageInner(
     // Write user prompt and system prompt to temp files (via Python for safe escaping)
     const promptFile = `/tmp/prompt-${agentId}.txt`
     const systemPromptFile = `${SYSTEM_PROMPT_DIR}/system-prompt-${agentId}.txt`
-    const systemPrompt = getSystemPromptTemplate()
+    const currentAgent = agentStore.getAgent(agentId) || running.agent
+    const systemPrompt = buildSystemPrompt(currentAgent)
 
     await Promise.all([
       retriedExec(running.box, 'python3', [
@@ -1765,12 +2865,14 @@ async function _sendMessageInner(
     // 3. Include /lsiopy/bin in PATH — Python packages like typing_extensions live there
     // 4. Use separate MCP config — CLI overwrites $HOME/.claude.json with its own state
     const oauthToken = buildClaudeCliAuthEnvValues().CLAUDE_CODE_OAUTH_TOKEN || ''
+    const modelId = resolveClaudeModelId(currentAgent)
     const cliCmd = buildClaudeCliCommand({
       agentId,
       promptFile,
       systemPromptFile,
       hasSession: running.hasSession,
       oauthToken,
+      modelId,
     })
 
     console.log(`[${agentId}] Starting claude -p (prompt length: ${fullPrompt.length})...`)
@@ -1782,6 +2884,7 @@ async function _sendMessageInner(
     // Stream stdout line-by-line — each JSON line is parsed and broadcast in real-time
     let fullResponse = ''
     let firstOutputSent = false
+    const leaderToolUses: LeaderToolUse[] = []
     const result = await streamingExec(
       running.box, 'bash', ['-c', cliCmd], { DISPLAY: ':1' },
       (line) => {
@@ -1790,6 +2893,15 @@ async function _sendMessageInner(
           const entries = parseStreamJsonLine(parsed, agentId)
           if (entries.length > 0) {
             emitAgentLogEntries(agentId, entries)
+            if (currentAgent.role === 'leader') {
+              for (const entry of entries) {
+                if (entry.type !== 'tool_use') continue
+                leaderToolUses.push({
+                  toolName: String(entry.data.toolName || ''),
+                  input: entry.data.input,
+                })
+              }
+            }
             // Switch status from 'thinking' to 'responding' on first real output
             if (!firstOutputSent) {
               firstOutputSent = true
@@ -1805,7 +2917,22 @@ async function _sendMessageInner(
         }
       },
       300_000,
+      (execution) => {
+        running.currentExecution = execution
+        if (execution && running.interruptRequested) {
+          triggerInterruptSignals(agentId, running)
+        }
+      },
+      running.interruptAbort?.promise,
     )
+
+    if (running.interruptRequested || result.aborted) {
+      return finalizeInterruptedRun(agentId, running, {
+        exitCode: result.exitCode,
+        stdoutBytes: result.stdout.length,
+        stderrBytes: result.stderr.length,
+      })
+    }
 
     console.log(`[${agentId}] streamingExec done: exit=${result.exitCode} stdout=${result.stdout.length}b stderr=${result.stderr.length}b firstOutput=${firstOutputSent} response=${fullResponse.length}b`)
     emitRuntimeLog(agentId, 'lifecycle', 'claude_cli_complete', {
@@ -1829,11 +2956,43 @@ async function _sendMessageInner(
     running.thinkingSince = 0
     setAgentStatus(agentId, 'idle', { source: 'send-message' })
 
+    const leaderPolicyViolation = currentAgent.role === 'leader'
+      ? detectLeaderPolicyViolation(leaderToolUses)
+      : null
+    if (leaderPolicyViolation) {
+      emitAgentLogEntries(agentId, [{
+        id: newEventId(),
+        agentId,
+        timestamp: Date.now(),
+        type: 'system',
+        data: {
+          message: `Leader policy violation: ${leaderPolicyViolation.reason}`,
+          toolName: leaderPolicyViolation.toolName,
+        },
+      }])
+      emitRuntimeLog(agentId, 'lifecycle', 'leader_policy_violation', leaderPolicyViolation)
+    }
+
+    const reminderTurn = finalizeTodoReminderTurn(
+      agentId,
+      currentAgent,
+      metadata?.todoReminder,
+      fullResponse,
+      leaderPolicyViolation,
+    )
+
     // Check idle todo state after each completed exchange (non-blocking).
-    queueTodoReminderIfNeeded(agentId)
+    if (reminderTurn.allowImmediateRequeue) {
+      queueTodoReminderIfNeeded(agentId)
+    }
 
     return fullResponse || '[NO_RESPONSE]'
   } catch (err: any) {
+    if (running.interruptRequested) {
+      return finalizeInterruptedRun(agentId, running, {
+        error: err?.message?.slice(0, 200) || 'unknown interrupt error',
+      })
+    }
     console.error(`[${agentId}] sendMessage error:`, err.message?.slice(0, 200))
     running.thinkingSince = 0
     const errorMessage = err.message?.slice(0, 200) || 'unknown sendMessage error'
@@ -1848,6 +3007,9 @@ async function _sendMessageInner(
     }, 30_000)
     throw err
   } finally {
+    running.currentExecution = null
+    running.interruptRequested = false
+    running.interruptAbort = null
     // Clear busy flag so mailbox daemon resumes polling
     await retriedExec(running.box, 'rm', ['-f', '/tmp/agent-busy'], { DISPLAY: ':1' }, 10_000).catch(() => {})
   }
@@ -2154,51 +3316,60 @@ export async function resetStoppedAgentRuntimeSandbox(agentId: string): Promise<
   })
 }
 
-/** Re-detect host URL and restart proxy/daemon for all running agents.
- *  BoxLite breaks guest→host networking when new containers start,
- *  so we must redeploy daemons after all containers are up. */
+/** Re-detect host URL for all running agents and restart daemons only when needed.
+ *  BoxLite can break guest→host networking when new containers start. */
+export async function reconcileAllRunningCommunicationDaemons(): Promise<void> {
+  const backendPort = getBackendPort()
+  if (backendPort <= 0) return
+
+  for (const [agentId, running] of runningAgents) {
+    try {
+      const daemonAssets = syncCommunicationDaemonAssets(agentId)
+      const endpointConfig = await resolveBackendEndpointConfig(running.box, backendPort, {
+        previousUrl: running.backendUrl,
+      })
+      const backendUrl = getPreferredBackendUrl(endpointConfig)
+      console.log(`Re-detected backend URL for ${running.agent.name}: ${backendUrl || '(none)'} (${endpointConfig.urls.length} candidates)`)
+      const restarted = await reconcileCommunicationDaemons(running, {
+        endpointConfig,
+        daemonAssetHash: daemonAssets.assetHash,
+        force: false,
+      })
+
+      console.log(`${restarted ? 'Reconciled' : 'Skipped'} daemons for ${running.agent.name}`)
+    } catch (err: any) {
+      console.error(`Failed to reconcile daemons for agent ${agentId}:`, err.message)
+    }
+  }
+}
+
+/** Force-redeploy proxy/daemon for all running agents.
+ *  Keeps the admin route behavior even when assets and backend URL are unchanged. */
 export async function redeployAllDaemons(): Promise<void> {
   const backendPort = getBackendPort()
   if (backendPort <= 0) return
-  const proxyCode = readAgentMcpFile('dune_proxy.py')
-  const daemonCode = readAgentMcpFile('mailbox_daemon.py')
 
   for (const [agentId, running] of runningAgents) {
     try {
       syncAgentSkills(agentId)
-
-      // Kill existing proxy/daemon
-      await timedExec(running.box, 'bash', ['-c',
-        'pkill -f dune_proxy.py 2>/dev/null; pkill -f mailbox_daemon.py 2>/dev/null; true'
-      ], { DISPLAY: ':1' }, 10_000)
-
+      await prepareAgentConfigFacadeInBox(running.box)
       await retriedExec(running.box, 'bash', ['-c',
-        'mkdir -p /config/.claude/skills && chown -R abc:abc /config/.claude/skills'
+        `mkdir -p ${AGENT_DUNE_CLAUDE_PATH}/skills && chown -R abc:abc ${AGENT_DUNE_VOLUME_PATH}`
       ], { DISPLAY: ':1' })
       await upsertClaudeSettingsInBox(running.box, agentId)
 
-      // Re-detect host URL
-      const backendUrl = await detectHostUrl(running.box, backendPort)
-      running.backendUrl = backendUrl
-      console.log(`Re-detected backend URL for ${running.agent.name}: ${backendUrl}`)
+      const daemonAssets = syncCommunicationDaemonAssets(agentId)
+      const endpointConfig = await resolveBackendEndpointConfig(running.box, backendPort, {
+        previousUrl: running.backendUrl,
+      })
+      const backendUrl = getPreferredBackendUrl(endpointConfig)
+      console.log(`Re-detected backend URL for ${running.agent.name}: ${backendUrl || '(none)'} (${endpointConfig.urls.length} candidates)`)
 
-      // Redeploy files (in case code was updated)
-      await Promise.all([
-        deployFile(running.box, proxyCode, '/config/dune_proxy.py'),
-        deployFile(running.box, daemonCode, '/config/mailbox_daemon.py'),
-      ])
-
-      // Restart proxy
-      const proxyEnv = `DUNE_API_URL=${backendUrl} DUNE_AGENT_ID=${agentId} DUNE_AGENT_NAME='${running.agent.name.replace(/'/g, "'\\''")}'`
-      await retriedExec(running.box, 'bash', ['-c',
-        `nohup runuser -u abc -- env ${proxyEnv} python3 /config/dune_proxy.py > /tmp/proxy.log 2>&1 &`
-      ], { DISPLAY: ':1' })
-
-      // Restart daemon
-      const daemonEnv = `DUNE_API_URL=${backendUrl} DUNE_AGENT_ID=${agentId}`
-      await retriedExec(running.box, 'bash', ['-c',
-        `nohup runuser -u abc -- env ${daemonEnv} python3 /config/mailbox_daemon.py > /tmp/mailbox.log 2>&1 &`
-      ], { DISPLAY: ':1' })
+      await reconcileCommunicationDaemons(running, {
+        endpointConfig,
+        daemonAssetHash: daemonAssets.assetHash,
+        force: true,
+      })
 
       console.log(`Redeployed daemons for ${running.agent.name}`)
     } catch (err: any) {

@@ -23,6 +23,7 @@ test('effective settings do not use environment fallback when DB is empty', () =
   const effective = settingsStore.getEffectiveClaudeSettings()
 
   assert.equal(stored.selectedModelProvider, null)
+  assert.equal(stored.defaultModelId, null)
   assert.equal(effective.anthropicApiKey, '')
   assert.equal(effective.claudeCodeOAuthToken, '')
   assert.equal(effective.anthropicAuthToken, '')
@@ -33,6 +34,7 @@ test('effective settings do not use environment fallback when DB is empty', () =
 test('DB values are returned as effective runtime values', () => {
   settingsStore.patchClaudeSettings({
     selectedModelProvider: 'claude',
+    defaultModelId: 'opus',
     anthropicApiKey: 'db-api-key',
     claudeCodeOAuthToken: 'db-oauth-token',
     anthropicAuthToken: 'db-auth-token',
@@ -43,6 +45,7 @@ test('DB values are returned as effective runtime values', () => {
   const stored = settingsStore.getStoredClaudeSettings()
   const effective = settingsStore.getEffectiveClaudeSettings()
   assert.equal(stored.selectedModelProvider, 'claude')
+  assert.equal(stored.defaultModelId, 'opus')
   assert.equal(effective.anthropicApiKey, 'db-api-key')
   assert.equal(effective.claudeCodeOAuthToken, 'db-oauth-token')
   assert.equal(effective.anthropicAuthToken, 'db-auth-token')
@@ -53,18 +56,21 @@ test('DB values are returned as effective runtime values', () => {
 test('clearing DB fields resets effective values to empty strings', () => {
   settingsStore.patchClaudeSettings({
     selectedModelProvider: 'claude',
+    defaultModelId: 'sonnet',
     anthropicApiKey: 'db-api-key',
     anthropicBaseUrl: 'https://db.example/o2a',
   })
 
   settingsStore.patchClaudeSettings({
     selectedModelProvider: null,
+    defaultModelId: null,
     anthropicApiKey: null,
     anthropicBaseUrl: '',
   })
 
   const stored = settingsStore.getStoredClaudeSettings()
   assert.equal(stored.selectedModelProvider, null)
+  assert.equal(stored.defaultModelId, null)
   assert.equal(stored.anthropicApiKey, null)
   assert.equal(stored.anthropicBaseUrl, null)
 

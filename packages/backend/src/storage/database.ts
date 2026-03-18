@@ -23,7 +23,13 @@ function initSchema(db: Database.Database) {
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       personality TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'follower',
+      work_mode TEXT NOT NULL DEFAULT 'normal',
+      model_id_override TEXT,
       host_exec_approval_mode TEXT NOT NULL DEFAULT 'approval-required',
+      host_operator_approval_mode TEXT NOT NULL DEFAULT 'approval-required',
+      host_operator_apps_json TEXT NOT NULL DEFAULT '[]',
+      host_operator_paths_json TEXT NOT NULL DEFAULT '[]',
       status TEXT NOT NULL DEFAULT 'stopped',
       avatar_color TEXT NOT NULL,
       created_at INTEGER NOT NULL
@@ -317,11 +323,42 @@ function initSchema(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_host_command_requests_agent_created
       ON host_command_requests(agent_id, created_at DESC);
 
+    CREATE TABLE IF NOT EXISTS host_operator_requests (
+      id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL,
+      requested_by_type TEXT NOT NULL,
+      requested_by_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      input_json TEXT NOT NULL,
+      target_json TEXT,
+      summary TEXT NOT NULL,
+      status TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      decided_at INTEGER,
+      started_at INTEGER,
+      completed_at INTEGER,
+      approver_id TEXT,
+      decision TEXT,
+      result_json TEXT,
+      artifact_paths_json TEXT NOT NULL DEFAULT '[]',
+      error_message TEXT,
+      FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_host_operator_requests_status_created
+      ON host_operator_requests(status, created_at ASC);
+
+    CREATE INDEX IF NOT EXISTS idx_host_operator_requests_agent_created
+      ON host_operator_requests(agent_id, created_at DESC);
+
     CREATE TABLE IF NOT EXISTS todos (
       id TEXT PRIMARY KEY,
       agent_id TEXT NOT NULL,
       title TEXT NOT NULL,
       description TEXT,
+      original_title TEXT NOT NULL,
+      original_description TEXT,
+      next_plan TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
       due_at INTEGER,
       created_at INTEGER NOT NULL,
@@ -335,6 +372,7 @@ function initSchema(db: Database.Database) {
     CREATE TABLE IF NOT EXISTS claude_settings (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       selected_model_provider TEXT,
+      default_model_id TEXT,
       anthropic_api_key TEXT,
       claude_code_oauth_token TEXT,
       anthropic_auth_token TEXT,
@@ -358,7 +396,120 @@ function initSchema(db: Database.Database) {
   }
 
   try {
+    db.exec(`ALTER TABLE agents ADD COLUMN host_operator_approval_mode TEXT NOT NULL DEFAULT 'approval-required'`)
+  } catch {
+    // Column already exists — ignore
+  }
+
+  try {
+    db.exec(`ALTER TABLE agents ADD COLUMN host_operator_apps_json TEXT NOT NULL DEFAULT '[]'`)
+  } catch {
+    // Column already exists — ignore
+  }
+
+  try {
+    db.exec(`ALTER TABLE agents ADD COLUMN host_operator_paths_json TEXT NOT NULL DEFAULT '[]'`)
+  } catch {
+    // Column already exists — ignore
+  }
+
+  try {
+    db.exec(`ALTER TABLE agents ADD COLUMN role TEXT NOT NULL DEFAULT 'follower'`)
+  } catch {
+    // Column already exists — ignore
+  }
+
+  try {
+    db.exec(`ALTER TABLE agents ADD COLUMN work_mode TEXT NOT NULL DEFAULT 'normal'`)
+  } catch {
+    // Column already exists — ignore
+  }
+
+  try {
+    db.exec(`ALTER TABLE agents ADD COLUMN model_id_override TEXT`)
+  } catch {
+    // Column already exists — ignore
+  }
+
+  try {
+    db.exec(`ALTER TABLE todos ADD COLUMN original_title TEXT NOT NULL DEFAULT ''`)
+  } catch {
+    // Column already exists — ignore
+  }
+
+  try {
+    db.exec(`ALTER TABLE todos ADD COLUMN original_description TEXT`)
+  } catch {
+    // Column already exists — ignore
+  }
+
+  try {
+    db.exec(`ALTER TABLE todos ADD COLUMN next_plan TEXT`)
+  } catch {
+    // Column already exists — ignore
+  }
+
+  try {
+    db.exec(`UPDATE agents SET role = 'follower' WHERE role IS NULL OR role = ''`)
+  } catch {
+    // Ignore if migration order leaves column unavailable
+  }
+
+  try {
+    db.exec(`
+      UPDATE agents
+      SET work_mode = CASE
+        WHEN role = 'leader' THEN 'plan-first'
+        ELSE 'normal'
+      END
+      WHERE work_mode IS NULL OR work_mode = ''
+    `)
+  } catch {
+    // Ignore if migration order leaves column unavailable
+  }
+
+  try {
+    db.exec(`
+      UPDATE agents
+      SET host_operator_approval_mode = host_exec_approval_mode
+      WHERE host_operator_approval_mode IS NULL
+         OR host_operator_approval_mode = ''
+         OR host_operator_approval_mode = 'approval-required'
+    `)
+  } catch {
+    // Ignore if migration order leaves column unavailable
+  }
+
+  try {
+    db.exec(`
+      UPDATE agents
+      SET model_id_override = 'opus'
+      WHERE role = 'leader' AND (model_id_override IS NULL OR model_id_override = '')
+    `)
+  } catch {
+    // Ignore if migration order leaves column unavailable
+  }
+
+  try {
+    db.exec(`UPDATE todos SET original_title = title WHERE original_title IS NULL OR original_title = ''`)
+  } catch {
+    // Ignore if migration order leaves column unavailable
+  }
+
+  try {
+    db.exec(`UPDATE todos SET original_description = description WHERE original_description IS NULL AND description IS NOT NULL`)
+  } catch {
+    // Ignore if migration order leaves column unavailable
+  }
+
+  try {
     db.exec(`ALTER TABLE claude_settings ADD COLUMN selected_model_provider TEXT`)
+  } catch {
+    // Column already exists — ignore
+  }
+
+  try {
+    db.exec(`ALTER TABLE claude_settings ADD COLUMN default_model_id TEXT`)
   } catch {
     // Column already exists — ignore
   }

@@ -96,3 +96,81 @@ test('POST /api/todos accepts boundary ms dueAt and remains pending immediately 
   const row = db.prepare('SELECT status FROM todos WHERE id = ?').get(created.id) as { status: string }
   assert.equal(row.status, 'pending')
 })
+
+test('POST /api/todos snapshots the original request fields', async () => {
+  const dueAt = Date.now() + 30 * 60_000
+  const createRes = await app.request('/api/todos', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      agentId: 'agent-1',
+      title: 'Snapshot title',
+      description: 'Snapshot description',
+      dueAt,
+    }),
+  })
+
+  assert.equal(createRes.status, 201)
+  const created = await createRes.json() as {
+    id: string
+    originalTitle: string
+    originalDescription?: string
+    nextPlan?: string
+  }
+  assert.equal(created.originalTitle, 'Snapshot title')
+  assert.equal(created.originalDescription, 'Snapshot description')
+  assert.equal(created.nextPlan, undefined)
+
+  const row = db.prepare(
+    'SELECT original_title as originalTitle, original_description as originalDescription FROM todos WHERE id = ?'
+  ).get(created.id) as { originalTitle: string; originalDescription: string | null }
+  assert.equal(row.originalTitle, 'Snapshot title')
+  assert.equal(row.originalDescription, 'Snapshot description')
+})
+
+test('PUT /api/todos/:id updates nextPlan while preserving the original request snapshot', async () => {
+  const dueAt = Date.now() + 30 * 60_000
+  const createRes = await app.request('/api/todos', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      agentId: 'agent-1',
+      title: 'Immutable request',
+      description: 'Keep this intact',
+      dueAt,
+    }),
+  })
+  assert.equal(createRes.status, 201)
+  const created = await createRes.json() as { id: string }
+
+  const updateRes = await app.request(`/api/todos/${created.id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      title: 'Working title',
+      nextPlan: 'Run the migration and verify logs',
+      originalTitle: 'Mutated title',
+      originalDescription: 'Mutated description',
+    }),
+  })
+
+  assert.equal(updateRes.status, 200)
+  const updated = await updateRes.json() as {
+    title: string
+    originalTitle: string
+    originalDescription?: string
+    nextPlan?: string
+  }
+  assert.equal(updated.title, 'Working title')
+  assert.equal(updated.originalTitle, 'Immutable request')
+  assert.equal(updated.originalDescription, 'Keep this intact')
+  assert.equal(updated.nextPlan, 'Run the migration and verify logs')
+
+  const row = db.prepare(
+    'SELECT title, original_title as originalTitle, original_description as originalDescription, next_plan as nextPlan FROM todos WHERE id = ?'
+  ).get(created.id) as { title: string; originalTitle: string; originalDescription: string | null; nextPlan: string | null }
+  assert.equal(row.title, 'Working title')
+  assert.equal(row.originalTitle, 'Immutable request')
+  assert.equal(row.originalDescription, 'Keep this intact')
+  assert.equal(row.nextPlan, 'Run the migration and verify logs')
+})
