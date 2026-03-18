@@ -6,6 +6,7 @@ const SELECTED_MODEL_PROVIDER_CLAUDE = 'claude'
 
 export type StoredClaudeSettings = {
   selectedModelProvider: SelectedModelProvider
+  defaultModelId: string | null
   anthropicApiKey: string | null
   claudeCodeOAuthToken: string | null
   anthropicAuthToken: string | null
@@ -58,6 +59,7 @@ function readStoredClaudeSettingsRow(): StoredClaudeSettings | null {
   const row = getDb().prepare(`
     SELECT
       selected_model_provider AS selectedModelProvider,
+      default_model_id AS defaultModelId,
       anthropic_api_key AS anthropicApiKey,
       claude_code_oauth_token AS claudeCodeOAuthToken,
       anthropic_auth_token AS anthropicAuthToken,
@@ -72,6 +74,7 @@ function readStoredClaudeSettingsRow(): StoredClaudeSettings | null {
 
   return {
     selectedModelProvider: normalizeSelectedModelProvider(row.selectedModelProvider),
+    defaultModelId: normalizeStoredValue(row.defaultModelId),
     anthropicApiKey: normalizeStoredValue(row.anthropicApiKey),
     claudeCodeOAuthToken: normalizeStoredValue(row.claudeCodeOAuthToken),
     anthropicAuthToken: normalizeStoredValue(row.anthropicAuthToken),
@@ -87,15 +90,17 @@ function writeStoredClaudeSettingsRow(next: StoredClaudeSettings): void {
     INSERT INTO claude_settings (
       id,
       selected_model_provider,
+      default_model_id,
       anthropic_api_key,
       claude_code_oauth_token,
       anthropic_auth_token,
       anthropic_base_url,
       claude_code_disable_nonessential_traffic,
       updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       selected_model_provider = excluded.selected_model_provider,
+      default_model_id = excluded.default_model_id,
       anthropic_api_key = excluded.anthropic_api_key,
       claude_code_oauth_token = excluded.claude_code_oauth_token,
       anthropic_auth_token = excluded.anthropic_auth_token,
@@ -105,6 +110,7 @@ function writeStoredClaudeSettingsRow(next: StoredClaudeSettings): void {
   `).run(
     CLAUDE_SETTINGS_ROW_ID,
     next.selectedModelProvider,
+    next.defaultModelId,
     next.anthropicApiKey,
     next.claudeCodeOAuthToken,
     next.anthropicAuthToken,
@@ -119,6 +125,7 @@ export function getStoredClaudeSettings(): StoredClaudeSettings {
   if (row) return row
   return {
     selectedModelProvider: null,
+    defaultModelId: null,
     anthropicApiKey: null,
     claudeCodeOAuthToken: null,
     anthropicAuthToken: null,
@@ -144,6 +151,7 @@ export function getClaudeSettingsSummary(): ClaudeSettings {
   const stored = getStoredClaudeSettings()
   return {
     selectedModelProvider: stored.selectedModelProvider,
+    defaultModelId: stored.defaultModelId,
     anthropicBaseUrl: effective.anthropicBaseUrl || null,
     claudeCodeDisableNonessentialTraffic: effective.claudeCodeDisableNonessentialTraffic || null,
     hasAnthropicApiKey: !!effective.anthropicApiKey,
@@ -179,6 +187,9 @@ export function patchClaudeSettings(update: ClaudeSettingsUpdate): ClaudeSetting
 
   if (Object.prototype.hasOwnProperty.call(update, 'selectedModelProvider')) {
     applySelectedModelProvider(update.selectedModelProvider)
+  }
+  if (Object.prototype.hasOwnProperty.call(update, 'defaultModelId')) {
+    applyValue('defaultModelId', update.defaultModelId)
   }
   if (Object.prototype.hasOwnProperty.call(update, 'anthropicApiKey')) {
     applyValue('anthropicApiKey', update.anthropicApiKey)

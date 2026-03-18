@@ -6,6 +6,7 @@ export type SelectedModelProvider = Static<typeof SelectedModelProviderSchema>
 
 export const ClaudeSettingsSchema = Type.Object({
   selectedModelProvider: SelectedModelProviderSchema,
+  defaultModelId: NullableString,
   anthropicBaseUrl: NullableString,
   claudeCodeDisableNonessentialTraffic: NullableString,
   hasAnthropicApiKey: Type.Boolean(),
@@ -18,6 +19,7 @@ export type ClaudeSettings = Static<typeof ClaudeSettingsSchema>
 
 export const ClaudeSettingsUpdateSchema = Type.Object({
   selectedModelProvider: Type.Optional(SelectedModelProviderSchema),
+  defaultModelId: Type.Optional(NullableString),
   anthropicApiKey: Type.Optional(NullableString),
   claudeCodeOAuthToken: Type.Optional(NullableString),
   anthropicAuthToken: Type.Optional(NullableString),

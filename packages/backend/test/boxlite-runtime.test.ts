@@ -20,7 +20,7 @@ test('boxlite init temporarily overrides BOXLITE_HOME without changing cwd', () 
 
   try {
     process.env.BOXLITE_HOME = 'outer-home'
-    const runtimeHome = join(process.cwd(), 'data', 'b')
+    const runtimeHome = join(process.cwd(), 'data', 'boxlite')
 
     runtimeInit.__withBoxliteInitContextForTests(() => {
       seenCwd = process.cwd()

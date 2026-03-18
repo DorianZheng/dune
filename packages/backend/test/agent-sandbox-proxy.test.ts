@@ -4,7 +4,9 @@ import { createServer } from 'node:http'
 import { once } from 'node:events'
 import { spawn } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
-import { resolve } from 'node:path'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 
 type CapturedRequest = {
   method: string
@@ -120,9 +122,9 @@ test('dune proxy forwards sandbox APIs with system actor headers and keeps exist
       return
     }
 
-    if (req.method === 'POST' && path === '/api/agents/agent-proxy-test/host-commands') {
+    if (req.method === 'POST' && path === '/api/agents/agent-proxy-test/host-operator') {
       const payload = JSON.parse(body.toString('utf-8') || '{}')
-      if (payload.command === 'sleep-proxy') {
+      if (payload.kind === 'overview' && payload.bundleId === 'sleep-proxy') {
         await delay(700)
       }
       res.writeHead(200, { 'Content-Type': 'application/json' })
@@ -131,10 +133,10 @@ test('dune proxy forwards sandbox APIs with system actor headers and keeps exist
         agentId: 'agent-proxy-test',
         requestedByType: 'system',
         requestedById: 'agent:agent-proxy-test',
-        command: payload.command || '',
-        args: Array.isArray(payload.args) ? payload.args : [],
-        cwd: payload.cwd || '/workspace',
-        scope: payload.scope || 'workspace',
+        kind: payload.kind || 'status',
+        input: payload,
+        target: payload.bundleId ? { bundleId: payload.bundleId } : null,
+        summary: `${payload.kind || 'status'} request`,
         status: 'completed',
         createdAt: Date.now(),
         decidedAt: Date.now(),
@@ -142,12 +144,8 @@ test('dune proxy forwards sandbox APIs with system actor headers and keeps exist
         completedAt: Date.now(),
         approverId: 'admin',
         decision: 'approve',
-        elevatedConfirmed: payload.scope === 'full-host',
-        exitCode: 0,
-        stdout: 'ok',
-        stderr: '',
-        stdoutTruncated: false,
-        stderrTruncated: false,
+        resultJson: { ok: true },
+        artifactPaths: [],
         errorMessage: null,
       }))
       return
@@ -316,29 +314,23 @@ test('dune proxy forwards sandbox APIs with system actor headers and keeps exist
     const blockedBody = await blockedRes.json() as { error: string }
     assert.equal(blockedBody.error, 'Agent is not in this channel.')
 
-    const hostExecRes = await fetchStep('host-exec', `http://127.0.0.1:${proxyPort}/host/v1/exec`, {
+    const hostExecRes = await fetchStep('host-overview', `http://127.0.0.1:${proxyPort}/host/v1/overview`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        command: 'node',
-        args: ['-e', 'process.stdout.write(\"proxy\")'],
-        cwd: '/workspace',
-        scope: 'workspace',
+        bundleId: 'com.apple.Safari',
       }),
     })
     assert.equal(hostExecRes.status, 200)
-    const hostExecBody = await hostExecRes.json() as { status: string; stdout: string }
+    const hostExecBody = await hostExecRes.json() as { status: string; kind: string }
     assert.equal(hostExecBody.status, 'completed')
-    assert.equal(hostExecBody.stdout, 'ok')
+    assert.equal(hostExecBody.kind, 'overview')
 
-    const longHostRequest = fetchStep('host-exec-long', `http://127.0.0.1:${proxyPort}/host/v1/exec`, {
+    const longHostRequest = fetchStep('host-overview-long', `http://127.0.0.1:${proxyPort}/host/v1/overview`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        command: 'sleep-proxy',
-        args: [],
-        cwd: '/workspace',
-        scope: 'workspace',
+        bundleId: 'sleep-proxy',
       }),
     })
     await delay(120)
@@ -408,10 +400,11 @@ test('dune proxy forwards sandbox APIs with system actor headers and keeps exist
     assert.equal(String(uploadReq?.headers['x-actor-type'] || ''), 'system')
     assert.equal(String(uploadReq?.headers['x-actor-id'] || ''), 'agent:agent-proxy-test')
 
-    const hostExecReq = findCaptured(captured, 'POST', '/api/agents/agent-proxy-test/host-commands')
+    const hostExecReq = findCaptured(captured, 'POST', '/api/agents/agent-proxy-test/host-operator')
     assert.ok(hostExecReq)
     assert.equal(String(hostExecReq?.headers['x-actor-type'] || ''), 'system')
     assert.equal(String(hostExecReq?.headers['x-actor-id'] || ''), 'agent:agent-proxy-test')
+    assert.equal(JSON.parse(hostExecReq?.body.toString('utf-8') || '{}').kind, 'overview')
 
     const channelsReq = findCaptured(captured, 'GET', '/api/channels')
     assert.ok(channelsReq)
@@ -454,5 +447,198 @@ test('dune proxy forwards sandbox APIs with system actor headers and keeps exist
       once(backend, 'close'),
       delay(1_500),
     ])
+  }
+})
+
+test('dune proxy fails over to the next backend endpoint after a transport error', async () => {
+  let goodBackendHits = 0
+
+  const badBackend = createServer((req) => {
+    req.socket.destroy()
+  })
+  badBackend.listen(0)
+  await once(badBackend, 'listening')
+  const badPort = (badBackend.address() as { port: number }).port
+
+  const goodBackend = createServer((req, res) => {
+    const path = req.url || '/'
+    if (req.method === 'GET' && path === '/api/agents') {
+      goodBackendHits += 1
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify([{ id: 'agent-proxy-failover', name: 'Proxy Failover' }]))
+      return
+    }
+
+    res.writeHead(404, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ error: 'not_found', path }))
+  })
+  goodBackend.listen(0)
+  await once(goodBackend, 'listening')
+  const goodPort = (goodBackend.address() as { port: number }).port
+
+  const tempDir = mkdtempSync(join(tmpdir(), 'dune-proxy-endpoints-'))
+  const endpointsPath = join(tempDir, 'backend-endpoints.json')
+  writeFileSync(endpointsPath, `${JSON.stringify({
+    preferredUrl: `http://127.0.0.1:${badPort}`,
+    urls: [
+      `http://127.0.0.1:${badPort}`,
+      `http://127.0.0.1:${goodPort}`,
+    ],
+    updatedAt: Date.now(),
+  }, null, 2)}\n`, 'utf-8')
+
+  const proxyPort = await findAvailablePort()
+  const proxyPath = resolve('src/agent-mcp/dune_proxy.py')
+  const proxy = spawn('python3', [proxyPath], {
+    env: {
+      ...process.env,
+      DUNE_API_URL: `http://127.0.0.1:${badPort}`,
+      DUNE_API_ENDPOINTS_FILE: endpointsPath,
+      DUNE_AGENT_ID: 'agent-proxy-failover',
+      DUNE_AGENT_NAME: 'Proxy Failover',
+      DUNE_PROXY_PORT: String(proxyPort),
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+
+  try {
+    const deadline = Date.now() + 8_000
+    let ready = false
+    while (Date.now() < deadline) {
+      try {
+        const response = await fetchWithTimeout(`http://127.0.0.1:${proxyPort}/api/agents`)
+        if (response.status === 200) {
+          ready = true
+          break
+        }
+      } catch {
+        // keep polling
+      }
+      await delay(100)
+    }
+
+    assert.equal(ready, true, 'proxy did not fail over to the reachable backend in time')
+    assert.ok(goodBackendHits > 0)
+  } finally {
+    proxy.kill('SIGTERM')
+    await Promise.race([
+      once(proxy, 'exit'),
+      delay(1_500),
+    ])
+    if (proxy.exitCode === null && proxy.signalCode === null) {
+      proxy.kill('SIGKILL')
+      await Promise.race([
+        once(proxy, 'exit'),
+        delay(1_500),
+      ])
+    }
+
+    goodBackend.close()
+    goodBackend.closeAllConnections?.()
+    goodBackend.closeIdleConnections?.()
+    await Promise.race([
+      once(goodBackend, 'close'),
+      delay(1_500),
+    ])
+
+    badBackend.close()
+    badBackend.closeAllConnections?.()
+    badBackend.closeIdleConnections?.()
+    await Promise.race([
+      once(badBackend, 'close'),
+      delay(1_500),
+    ])
+
+    rmSync(tempDir, { recursive: true, force: true })
+  }
+})
+
+test('mailbox daemon fails over to the next backend endpoint after a transport error', async () => {
+  let goodMailboxHits = 0
+
+  const badBackend = createServer((req) => {
+    req.socket.destroy()
+  })
+  badBackend.listen(0)
+  await once(badBackend, 'listening')
+  const badPort = (badBackend.address() as { port: number }).port
+
+  const goodBackend = createServer((req, res) => {
+    const path = req.url || '/'
+    if (req.method === 'GET' && path === '/api/agents/agent-mailbox-failover/mailbox') {
+      goodMailboxHits += 1
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ unreadCount: 0, activeLease: null }))
+      return
+    }
+
+    res.writeHead(404, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ error: 'not_found', path }))
+  })
+  goodBackend.listen(0)
+  await once(goodBackend, 'listening')
+  const goodPort = (goodBackend.address() as { port: number }).port
+
+  const tempDir = mkdtempSync(join(tmpdir(), 'dune-mailbox-endpoints-'))
+  const endpointsPath = join(tempDir, 'backend-endpoints.json')
+  writeFileSync(endpointsPath, `${JSON.stringify({
+    preferredUrl: `http://127.0.0.1:${badPort}`,
+    urls: [
+      `http://127.0.0.1:${badPort}`,
+      `http://127.0.0.1:${goodPort}`,
+    ],
+    updatedAt: Date.now(),
+  }, null, 2)}\n`, 'utf-8')
+
+  const daemonPath = resolve('src/agent-mcp/mailbox_daemon.py')
+  const daemon = spawn('python3', [daemonPath], {
+    env: {
+      ...process.env,
+      DUNE_API_URL: `http://127.0.0.1:${badPort}`,
+      DUNE_API_ENDPOINTS_FILE: endpointsPath,
+      DUNE_AGENT_ID: 'agent-mailbox-failover',
+      DUNE_MAILBOX_POLL_INTERVAL: '1',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+
+  try {
+    const deadline = Date.now() + 8_000
+    while (Date.now() < deadline && goodMailboxHits === 0) {
+      await delay(100)
+    }
+
+    assert.ok(goodMailboxHits > 0, 'mailbox daemon did not fail over to the reachable backend in time')
+  } finally {
+    daemon.kill('SIGTERM')
+    await Promise.race([
+      once(daemon, 'exit'),
+      delay(1_500),
+    ])
+    if (daemon.exitCode === null && daemon.signalCode === null) {
+      daemon.kill('SIGKILL')
+      await Promise.race([
+        once(daemon, 'exit'),
+        delay(1_500),
+      ])
+    }
+
+    goodBackend.close()
+    goodBackend.closeAllConnections?.()
+    goodBackend.closeIdleConnections?.()
+    await Promise.race([
+      once(goodBackend, 'close'),
+      delay(1_500),
+    ])
+
+    badBackend.close()
+    badBackend.closeAllConnections?.()
+    badBackend.closeIdleConnections?.()
+    await Promise.race([
+      once(badBackend, 'close'),
+      delay(1_500),
+    ])
+
+    rmSync(tempDir, { recursive: true, force: true })
   }
 })

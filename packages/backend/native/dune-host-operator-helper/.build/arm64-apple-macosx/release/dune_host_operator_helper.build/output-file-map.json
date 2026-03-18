@@ -1,0 +1,13 @@
+{
+  "": {
+    "dependencies": "/Users/zhengzhiquan/Workspace/dune/packages/backend/native/dune-host-operator-helper/.build/arm64-apple-macosx/release/dune_host_operator_helper.build/dune_host_operator_helper.d",
+    "object": "/Users/zhengzhiquan/Workspace/dune/packages/backend/native/dune-host-operator-helper/.build/arm64-apple-macosx/release/dune_host_operator_helper.build/dune_host_operator_helper.o",
+    "swift-dependencies": "/Users/zhengzhiquan/Workspace/dune/packages/backend/native/dune-host-operator-helper/.build/arm64-apple-macosx/release/dune_host_operator_helper.build/master.swiftdeps"
+  },
+  "/Users/zhengzhiquan/Workspace/dune/packages/backend/native/dune-host-operator-helper/Sources/dune-host-operator-helper/main.swift": {
+    "object": "/Users/zhengzhiquan/Workspace/dune/packages/backend/native/dune-host-operator-helper/.build/arm64-apple-macosx/release/dune_host_operator_helper.build/main.swift.o",
+    "swiftmodule": "/Users/zhengzhiquan/Workspace/dune/packages/backend/native/dune-host-operator-helper/.build/arm64-apple-macosx/release/dune_host_operator_helper.build/main~partial.swiftmodule",
+    "swift-dependencies": "/Users/zhengzhiquan/Workspace/dune/packages/backend/native/dune-host-operator-helper/.build/arm64-apple-macosx/release/dune_host_operator_helper.build/main.swiftdeps",
+    "diagnostics": "/Users/zhengzhiquan/Workspace/dune/packages/backend/native/dune-host-operator-helper/.build/arm64-apple-macosx/release/dune_host_operator_helper.build/main.dia"
+  }
+}

@@ -9,4 +9,4 @@ resetAllStatuses()
 await reconcileSandboxesOnStartup()
 
 // Start server
-startServer()
+await startServer()

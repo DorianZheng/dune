@@ -86,12 +86,18 @@ export class AgentTodoPanel extends LitElement {
 
     .todo-item {
       display: flex;
-      align-items: center;
-      gap: 8px;
+      flex-direction: column;
+      gap: 6px;
       padding: 6px 8px;
       border-radius: var(--radius-sm);
       background: var(--bg-elevated);
       font-size: 13px;
+    }
+
+    .todo-main {
+      display: flex;
+      align-items: center;
+      gap: 8px;
     }
 
     .todo-item:hover {
@@ -169,6 +175,22 @@ export class AgentTodoPanel extends LitElement {
 
     .todo-delete:hover {
       color: var(--error);
+    }
+
+    .todo-meta {
+      padding-left: 24px;
+      font-size: 11px;
+      color: var(--text-secondary);
+      line-height: 1.4;
+      white-space: pre-wrap;
+    }
+
+    .todo-plan {
+      padding-left: 24px;
+      font-size: 11px;
+      color: var(--text-primary);
+      line-height: 1.4;
+      white-space: pre-wrap;
     }
 
     .edit-input {
@@ -369,27 +391,34 @@ export class AgentTodoPanel extends LitElement {
   private renderTodoItem(todo: Todo) {
     const isDone = todo.status === 'done'
     const due = todo.dueAt ? this.formatDue(todo.dueAt) : null
+    const showOriginalDescription = !!todo.originalDescription
+    const showNextPlan = !!todo.nextPlan
 
     return html`
       <div class="todo-item">
-        <button
-          class="todo-check ${isDone ? 'done' : ''}"
-          @click=${() => this.toggleDone(todo)}
-          title=${isDone ? 'Mark pending' : 'Mark done'}
-        ></button>
-        ${this.editingId === todo.id ? html`
-          <input
-            class="edit-input"
-            .value=${this.editTitle}
-            @input=${(e: Event) => { this.editTitle = (e.target as HTMLInputElement).value }}
-            @keydown=${(e: KeyboardEvent) => this.handleEditKeydown(e, todo)}
-            @blur=${() => this.saveEdit(todo)}
-          />
-        ` : html`
-          <span class="todo-text ${isDone ? 'done' : ''}" @dblclick=${() => this.startEdit(todo)}>${todo.title}</span>
-        `}
-        ${due ? html`<span class="todo-due ${due.overdue && !isDone ? 'overdue' : ''}">${due.text}</span>` : nothing}
-        <button class="todo-delete" @click=${() => this.handleDelete(todo.id)} title="Delete">✕</button>
+        <div class="todo-main">
+          <button
+            class="todo-check ${isDone ? 'done' : ''}"
+            @click=${() => this.toggleDone(todo)}
+            title=${isDone ? 'Mark pending' : 'Mark done'}
+          ></button>
+          ${this.editingId === todo.id ? html`
+            <input
+              class="edit-input"
+              .value=${this.editTitle}
+              @input=${(e: Event) => { this.editTitle = (e.target as HTMLInputElement).value }}
+              @keydown=${(e: KeyboardEvent) => this.handleEditKeydown(e, todo)}
+              @blur=${() => this.saveEdit(todo)}
+            />
+          ` : html`
+            <span class="todo-text ${isDone ? 'done' : ''}" @dblclick=${() => this.startEdit(todo)}>${todo.title}</span>
+          `}
+          ${due ? html`<span class="todo-due ${due.overdue && !isDone ? 'overdue' : ''}">${due.text}</span>` : nothing}
+          <button class="todo-delete" @click=${() => this.handleDelete(todo.id)} title="Delete">✕</button>
+        </div>
+        <div class="todo-meta">Original request: ${todo.originalTitle}</div>
+        ${showOriginalDescription ? html`<div class="todo-meta">Original details: ${todo.originalDescription}</div>` : nothing}
+        ${showNextPlan ? html`<div class="todo-plan">Next plan: ${todo.nextPlan}</div>` : nothing}
       </div>
     `
   }

@@ -78,6 +78,39 @@ export class CreateAgentDialog extends LitElement {
       flex-wrap: wrap;
     }
 
+    .role-options {
+      display: flex;
+      gap: var(--space-sm);
+      margin-top: var(--space-xs);
+    }
+
+    .role-btn {
+      flex: 1;
+      min-height: 42px;
+      border: 1px solid var(--border-color, #334155);
+      background: var(--bg-surface);
+      color: var(--text-primary);
+      text-align: left;
+      padding: 10px 12px;
+    }
+
+    .role-btn.selected {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent);
+    }
+
+    .role-title {
+      font-size: var(--text-body-size);
+      font-weight: 600;
+    }
+
+    .role-copy {
+      margin-top: 4px;
+      font-size: var(--text-meta-size);
+      color: var(--text-muted);
+      line-height: 1.4;
+    }
+
     .color-btn {
       width: 28px;
       height: 28px;
@@ -142,10 +175,12 @@ export class CreateAgentDialog extends LitElement {
 
   private colors = ['#0f9a90', '#0ea5e9', '#3b82f6', '#6d28d9', '#ef4444', '#f97316', '#10b981', '#64748b']
   private selectedColor = this.colors[0]
+  private selectedRole: 'leader' | 'follower' = 'follower'
 
   open() {
     this.shadowRoot?.querySelector('form')?.reset()
     this.selectedColor = this.colors[0]
+    this.selectedRole = 'follower'
     this.requestUpdate()
     this.dialog?.showModal()
   }
@@ -160,7 +195,12 @@ export class CreateAgentDialog extends LitElement {
     const personality = (form.querySelector('[name=personality]') as HTMLTextAreaElement).value.trim()
     if (!name) return
     this.dispatchEvent(new CustomEvent('agent-created', {
-      detail: { name, personality: personality || 'You are a helpful AI assistant.', avatarColor: this.selectedColor },
+      detail: {
+        name,
+        personality: personality || 'You are a helpful AI assistant.',
+        role: this.selectedRole,
+        avatarColor: this.selectedColor,
+      },
       bubbles: true,
       composed: true,
     }))
@@ -179,6 +219,24 @@ export class CreateAgentDialog extends LitElement {
 
           <label for="agent-personality">Role and personality</label>
           <textarea id="agent-personality" name="personality" placeholder="Describe scope, writing style, and decision boundaries..."></textarea>
+
+          <label>Agent role</label>
+          <div class="role-options" role="radiogroup" aria-label="Agent role">
+            ${[
+              { id: 'leader', title: 'Leader', description: 'Defaults to Plan First with an Opus model override.' },
+              { id: 'follower', title: 'Follower', description: 'Defaults to Normal mode and inherits the workspace model.' },
+            ].map(role => html`
+              <button
+                class="role-btn ${role.id === this.selectedRole ? 'selected' : ''}"
+                type="button"
+                @click=${() => { this.selectedRole = role.id as 'leader' | 'follower'; this.requestUpdate() }}
+                aria-pressed=${role.id === this.selectedRole}
+              >
+                <div class="role-title">${role.title}</div>
+                <div class="role-copy">${role.description}</div>
+              </button>
+            `)}
+          </div>
 
           <label>Avatar color</label>
           <div class="colors" role="radiogroup" aria-label="Avatar color">

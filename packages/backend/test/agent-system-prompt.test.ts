@@ -26,6 +26,7 @@ test('assembled system prompt does not include AGENTS profile sections', () => {
   const agent = agentStore.createAgent({
     name: 'Prompt Test Agent',
     personality: 'Prompt test',
+    role: 'leader',
   })
 
   const prompt = agentManager.assembleSystemPrompt(agent.id)
@@ -39,10 +40,28 @@ test('assembled system prompt does not include AGENTS profile sections', () => {
   assert.equal(prompt.includes('<identity>'), true)
   assert.equal(prompt.includes('</identity>'), true)
   assert.match(prompt, /Identity rule: You are defined by memory\./)
+  assert.match(prompt, /<agent>/)
+  assert.match(prompt, /Role: leader/)
+  assert.match(prompt, /Work mode: plan-first/)
+  assert.match(prompt, /use dune-leader to reassess the mission/i)
+  assert.match(prompt, /assign work, follow up, review outcomes/i)
+  assert.match(prompt, /Do not implement directly yourself/i)
+  assert.match(prompt, /Remove obstacles aggressively/i)
+  assert.match(prompt, /do not wait passively/i)
+  assert.match(prompt, /leader-thesis\.md/i)
+  assert.match(prompt, /Leader PDCA footer/i)
+  assert.match(prompt, /Before editing files, using tools, or taking multi-step action/i)
+})
+
+test('stop-agent shutdown prompt remains generic and not role-specific', () => {
+  const prompt = agentManager.__getStopAgentShutdownPromptForTests()
+  assert.match(prompt, /Save any important information from this session/i)
+  assert.equal(prompt.includes('leader'), false)
+  assert.equal(prompt.includes('follower'), false)
 })
 
 test('listSkills includes markdown payload while preserving existing fields', () => {
-  const skills = agentManager.listSkills()
+  const skills = agentManager.listSkills({ role: 'leader' })
   assert.ok(skills.length > 0)
 
   for (const skill of skills) {
@@ -54,6 +73,13 @@ test('listSkills includes markdown payload while preserving existing fields', ()
     assert.ok(skill.markdown.trim().length > 0)
     assert.equal(skill.preview, skill.description)
   }
+
+  assert.ok(skills.some(skill => skill.name === 'dune-leader'))
+  assert.equal(skills.some(skill => skill.name === 'dune-sandbox-operator'), false)
+  // host-operator is a coordination skill shared by both leader and follower
+  assert.equal(skills.some(skill => skill.name === 'dune-host-operator'), true)
+  assert.equal(skills.some(skill => skill.name === 'dune-miniapp-builder'), false)
+  assert.equal(agentManager.listSkills({ role: 'follower' }).some(skill => skill.name === 'dune-leader'), false)
 })
 
 test('bundled asset resolver falls back from dist to src assets', () => {

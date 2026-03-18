@@ -5,7 +5,8 @@ Resolves channel names → IDs, injects agent authorId for /send, and injects
 system actor headers for /sandboxes/v1/*.
 
 Env vars (set by agent-manager.ts):
-  DUNE_API_URL   — backend URL (e.g. http://host.docker.internal:50011)
+  DUNE_API_URL   — bootstrap backend URL
+  DUNE_API_ENDPOINTS_FILE — optional dynamic backend endpoints file
   DUNE_AGENT_ID  — this agent's UUID
   DUNE_AGENT_NAME — this agent's display name
 """
@@ -13,41 +14,32 @@ Env vars (set by agent-manager.ts):
 import json
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlparse
-from urllib.request import Request, urlopen
 
-API_URL = os.environ["DUNE_API_URL"]
+from backend_url_resolver import BackendTransportError, BackendUrlResolver, decode_json_or_text
+
+API_RESOLVER = BackendUrlResolver(
+    os.environ.get("DUNE_API_URL"),
+    os.environ.get("DUNE_API_ENDPOINTS_FILE"),
+)
 AGENT_ID = os.environ["DUNE_AGENT_ID"]
 AGENT_NAME = os.environ.get("DUNE_AGENT_NAME", "Agent")
 PORT = int(os.environ.get("DUNE_PROXY_PORT", "3200"))
 
 # Cache: channel name → id
 _channel_cache = {}
-
-
-def _decode_json_or_text(raw):
-    if not raw:
-        return {}
-    text = raw.decode()
-    try:
-        return json.loads(text)
-    except Exception:
-        return text
-
-
 def api_with_status(method, path, body=None):
     """Make a request to the backend API and return (status, parsed body)."""
-    url = f"{API_URL}{path}"
-    data = json.dumps(body).encode() if body is not None else None
-    headers = {"Content-Type": "application/json"} if body is not None else {}
-    req = Request(url, data=data, headers=headers, method=method)
     try:
-        with urlopen(req, timeout=30) as resp:
-            return int(resp.status), _decode_json_or_text(resp.read())
-    except HTTPError as e:
-        return int(e.code), _decode_json_or_text(e.read())
-    except Exception as e:
+        status, _, payload = API_RESOLVER.request(
+            method,
+            path,
+            body=body,
+            headers={"Content-Type": "application/json"} if body is not None else {},
+            timeout=30,
+        )
+        return status, decode_json_or_text(payload)
+    except BackendTransportError as e:
         return 502, {"error": str(e), "status": 502}
 
 
@@ -67,7 +59,6 @@ def proxy_api_request(method, parsed, body_bytes, content_type, accept, api_path
     If api_path is given, use it directly; otherwise prefix with /api."""
     query = f"?{parsed.query}" if parsed.query else ""
     path = api_path if api_path else f"/api{parsed.path}"
-    url = f"{API_URL}{path}{query}"
     headers = {
         "X-Actor-Type": "system",
         "X-Actor-Id": f"agent:{AGENT_ID}",
@@ -77,21 +68,15 @@ def proxy_api_request(method, parsed, body_bytes, content_type, accept, api_path
     if accept:
         headers["Accept"] = accept
 
-    req = Request(url, data=body_bytes if body_bytes else None, headers=headers, method=method)
     try:
-        with urlopen(req, timeout=90) as resp:
-            return (
-                int(resp.status),
-                dict(resp.headers.items()),
-                resp.read(),
-            )
-    except HTTPError as e:
-        return (
-            int(e.code),
-            dict(e.headers.items()) if e.headers else {},
-            e.read(),
+        return API_RESOLVER.request(
+            method,
+            f"{path}{query}",
+            body=body_bytes if body_bytes else None,
+            headers=headers,
+            timeout=90,
         )
-    except Exception as e:
+    except BackendTransportError as e:
         payload = json.dumps({"error": str(e), "status": 502}).encode()
         return (502, {"Content-Type": "application/json"}, payload)
 
@@ -233,17 +218,33 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         parsed = urlparse(self.path)
-        if parsed.path == "/host/v1/exec":
+        host_kind_map = {
+            "/host/v1/overview": "overview",
+            "/host/v1/perceive": "perceive",
+            "/host/v1/act": "act",
+            "/host/v1/status": "status",
+            "/host/v1/filesystem": "filesystem",
+        }
+        if parsed.path in host_kind_map:
             body_bytes = self._read_body_bytes()
+            try:
+                payload = json.loads(body_bytes.decode()) if body_bytes else {}
+            except (json.JSONDecodeError, ValueError) as e:
+                self._respond_json(400, {"error": f"Invalid JSON: {e}"})
+                return
+            if not isinstance(payload, dict):
+                self._respond_json(400, {"error": "JSON object required"})
+                return
+            payload["kind"] = host_kind_map[parsed.path]
             content_type = self.headers.get("Content-Type")
             accept = self.headers.get("Accept")
             status, resp_headers, payload = proxy_api_request(
                 method="POST",
                 parsed=parsed,
-                body_bytes=body_bytes,
+                body_bytes=json.dumps(payload).encode(),
                 content_type=content_type,
                 accept=accept,
-                api_path=f"/api/agents/{AGENT_ID}/host-commands",
+                api_path=f"/api/agents/{AGENT_ID}/host-operator",
             )
 
             self.send_response(status)

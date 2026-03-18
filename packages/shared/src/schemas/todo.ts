@@ -12,6 +12,9 @@ export const TodoSchema = Type.Object({
   agentId: Type.String(),
   title: Type.String(),
   description: Type.Optional(Type.String()),
+  originalTitle: Type.String(),
+  originalDescription: Type.Optional(Type.String()),
+  nextPlan: Type.Optional(Type.String()),
   status: TodoStatus,
   dueAt: DueAtMsSchema,
   createdAt: Type.Number(),
@@ -32,6 +35,7 @@ export type CreateTodo = Static<typeof CreateTodoSchema>
 export const UpdateTodoSchema = Type.Object({
   title: Type.Optional(Type.String()),
   description: Type.Optional(Type.String()),
+  nextPlan: Type.Optional(Type.String()),
   status: Type.Optional(TodoStatus),
   dueAt: Type.Optional(DueAtMsSchema),
 })

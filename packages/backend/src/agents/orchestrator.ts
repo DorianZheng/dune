@@ -76,7 +76,7 @@ export async function onNewMessage(message: Message, chainDepth = 0): Promise<vo
 
     const otherAgents = agents.filter((candidate) => candidate.id !== agentId)
     if (otherAgents.length > 0) {
-      const roster = otherAgents.map((candidate) => `${candidate.name} (${candidate.personality.split('.')[0]})`).join(', ')
+      const roster = otherAgents.map((candidate) => `${candidate.name} [${candidate.role}] (${candidate.personality.split('.')[0]})`).join(', ')
       contextMessages.push({ authorName: 'System', content: `[Team members: ${roster}]` })
     }
 

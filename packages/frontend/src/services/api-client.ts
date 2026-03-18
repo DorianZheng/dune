@@ -33,8 +33,9 @@ import type {
   SandboxFsMoveRequest,
   SandboxFsReadResponse,
   SandboxActorTypeType,
-  HostCommandDecisionRequest,
-  HostCommandRequest,
+  HostOperatorDecisionRequest,
+  HostOperatorRequest,
+  HostOperatorRunningApp,
   ClaudeSettings,
   ClaudeSettingsUpdate,
 } from '@dune/shared'
@@ -149,8 +150,8 @@ async function request<T>(path: string, options?: RequestOptions): Promise<T> {
 
 async function getAdminBaseUrl(): Promise<string> {
   if (adminBaseUrl) return adminBaseUrl
-  const info = await request<{ hostCommandAdminBaseUrl: string }>('/api/settings/admin-plane', { actor: null })
-  adminBaseUrl = info.hostCommandAdminBaseUrl
+  const info = await request<{ hostOperatorAdminBaseUrl?: string; hostCommandAdminBaseUrl: string }>('/api/settings/admin-plane', { actor: null })
+  adminBaseUrl = info.hostOperatorAdminBaseUrl || info.hostCommandAdminBaseUrl
   return adminBaseUrl
 }
 
@@ -196,13 +197,24 @@ export const listAgents = () => request<Agent[]>('/api/agents', { actor: null })
 export const createAgent = (data: CreateAgent) => request<Agent>('/api/agents', { method: 'POST', body: JSON.stringify(data), actor: null })
 export const startAgent = (id: string) => request(`/api/agents/${id}/start`, { method: 'POST', actor: null })
 export const stopAgent = (id: string) => request(`/api/agents/${id}/stop`, { method: 'POST', actor: null })
+export const interruptAgent = (id: string) => request(`/api/agents/${id}/interrupt`, { method: 'POST', actor: null })
 export const cancelAgentStart = (id: string) => request(`/api/agents/${id}/cancel-start`, { method: 'POST', actor: null })
 export const startAllAgents = () => request('/api/agents/start-all', { method: 'POST', actor: null })
 export const stopAllAgents = () => request('/api/agents/stop-all', { method: 'POST', actor: null })
 export const deleteAgent = (id: string) => request(`/api/agents/${id}`, { method: 'DELETE', actor: null })
 export const updateAgent = (
   id: string,
-  data: Partial<{ name: string; personality: string; hostExecApprovalMode: Agent['hostExecApprovalMode']; avatarColor: string }>,
+  data: Partial<{
+    name: string
+    personality: string
+    role: Agent['role']
+    workMode: Agent['workMode']
+    modelIdOverride: Agent['modelIdOverride']
+    hostOperatorApprovalMode: Agent['hostOperatorApprovalMode']
+    hostOperatorApps: Agent['hostOperatorApps']
+    hostOperatorPaths: Agent['hostOperatorPaths']
+    avatarColor: string
+  }>,
 ) => request<Agent>(`/api/agents/${id}`, { method: 'PUT', body: JSON.stringify(data), actor: null })
 export const getAgentSkills = (id: string) => request<Array<{ name: string; description: string; preview: string; scripts: string[]; markdown: string }>>(`/api/agents/${id}/skills`, { actor: null })
 export const getAgentSystemPrompt = (id: string) => request<{ prompt: string }>(`/api/agents/${id}/system-prompt`, { actor: null })
@@ -232,16 +244,26 @@ export const getAgentLogs = (id: string, options?: { limit?: number; beforeSeq?:
 }
 export const getAgentScreenshot = (id: string) => request<{ data: string; width: number; height: number; format: string }>(`/api/agents/${id}/screenshot`, { actor: null })
 export const getAgentScreen = (id: string) => request<{ guiHttpPort: number; guiHttpsPort: number; width: number; height: number }>(`/api/agents/${id}/screen`, { actor: null })
-export const getHostCommandRequest = (requestId: string, actor?: SandboxActorIdentity | null) =>
-  request<HostCommandRequest>(`/api/agents/host-commands/${encodeURIComponent(requestId)}`, { actor })
-export const listPendingHostCommandRequestsAdmin = () =>
-  adminRequest<{ requests: HostCommandRequest[] }>('/api/admin/host-commands/pending')
-export const decideHostCommandRequestAdmin = (requestId: string, data: HostCommandDecisionRequest) =>
-  adminRequest<HostCommandRequest>(`/api/admin/host-commands/${encodeURIComponent(requestId)}/decision`, {
+export const getHostOperatorRequest = (requestId: string, actor?: SandboxActorIdentity | null) =>
+  request<HostOperatorRequest>(`/api/agents/host-operator/${encodeURIComponent(requestId)}`, { actor })
+export const listPendingHostOperatorRequestsAdmin = () =>
+  adminRequest<{ requests: HostOperatorRequest[] }>('/api/admin/host-operator/pending')
+export const decideHostOperatorRequestAdmin = (requestId: string, data: HostOperatorDecisionRequest) =>
+  adminRequest<HostOperatorRequest>(`/api/admin/host-operator/${encodeURIComponent(requestId)}/decision`, {
     method: 'POST',
     body: JSON.stringify(data),
   })
-export const sendDirectMessage = (agentId: string, content: string) => request<{ response: string }>(`/api/agents/${agentId}/dm`, { method: 'POST', body: JSON.stringify({ content }), actor: null })
+export const listRunningHostOperatorAppsAdmin = () =>
+  adminRequest<{ apps: HostOperatorRunningApp[] }>('/api/admin/host-operator/apps')
+export const sendDirectMessage = (
+  agentId: string,
+  content: string,
+  options?: { clientRequestId?: string },
+) => request<{ response: string }>(`/api/agents/${agentId}/dm`, {
+  method: 'POST',
+  body: JSON.stringify({ content, clientRequestId: options?.clientRequestId }),
+  actor: null,
+})
 export const listAgentApps = (agentId: string) => request<MiniApp[]>(`/api/agents/${agentId}/apps`, { actor: null })
 export const listAllApps = () => request<MiniApp[]>('/api/agents/apps/all', { actor: null })
 export const openAgentApp = (agentId: string, slug: string) => request<MiniAppOpenResponse>(`/api/agents/${agentId}/apps/${encodeURIComponent(slug)}/open`, { method: 'POST', actor: null })

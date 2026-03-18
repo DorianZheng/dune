@@ -39,6 +39,7 @@ curl -s -X POST http://localhost:3200/api/todos \
 - `title` (required): Short description of the task.
 - `description` (optional): Longer details.
 - `dueAt` (required): Unix epoch **milliseconds**. You will be DM'd when the time arrives.
+- On create, the backend snapshots `originalTitle` and `originalDescription` from this initial request.
 
 ## Update a todo
 
@@ -49,6 +50,8 @@ curl -s -X PUT http://localhost:3200/api/todos/TODO_ID \
 ```
 
 Updatable fields: `title`, `description`, `status` (`pending` | `done`), `dueAt` (number).
+- `nextPlan` is also updatable and is the preferred place for leader handoff planning.
+- `originalTitle` and `originalDescription` are immutable snapshots owned by the backend. Do not try to rewrite them.
 
 ## Delete a todo
 
@@ -57,14 +60,18 @@ curl -s -X DELETE http://localhost:3200/api/todos/TODO_ID
 ```
 
 ## Staying Active
-Your todos are your heartbeat. Without pending todos, you won't be woken up.
-Always keep at least one pending todo with a `dueAt` in the near future.
-After completing a todo, immediately schedule your next one.
+Followers use todos as their heartbeat. Keep at least one pending todo with a `dueAt` in the near future.
+Leaders should use follower-owned todos for delegated work and leader-owned todos only for coordination, follow-up, escalation, check-ins, and review.
 
 ## Tips
 
 - Set `dueAt` to schedule a reminder. Use `$(date +%s)000 + delay_ms` to compute future times in bash.
-- When you go idle with overdue todos, you'll be reminded automatically.
+- When you go idle, you'll be reminded automatically to either plan the next step or preserve the original request, depending on your role.
 - Mark items `done` when complete so they stop appearing in pending lists.
 - **Do not pipe create/update curl commands to `python3 -m json.tool`** — it can cause false errors. Check the raw response instead.
 - Before creating a new todo, list pending todos first to avoid duplicates.
+- Leaders should assign work through a follower-owned todo plus a concise message.
+- Leaders should keep `nextPlan` current only as an optional operational note after a `dune-leader` PDCA cycle.
+- If a leader goes idle, use `dune-leader` and end with the required `Leader PDCA` footer.
+- Leaders do not create implementation todos for themselves.
+- Followers should preserve the original request snapshot and keep progress in working fields or memory.

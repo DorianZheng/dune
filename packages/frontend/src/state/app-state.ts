@@ -4,7 +4,7 @@ import type {
   Message,
   AgentLogEntry,
   AgentStatusType,
-  HostCommandRequest,
+  HostOperatorRequest,
   MiniApp,
 } from '@dune/shared'
 import type { WsClient } from '../services/ws-client.js'
@@ -36,7 +36,7 @@ class AppState extends EventTarget {
   agentApps: Map<string, MiniApp[]> = new Map()
   allApps: MiniApp[] = []
   miniappWindow: MiniappWindowState | null = null
-  pendingHostCommands: HostCommandRequest[] = []
+  pendingHostOperatorRequests: HostOperatorRequest[] = []
 
   setChannels(channels: Channel[]) {
     this.channels = channels
@@ -269,19 +269,19 @@ class AppState extends EventTarget {
     return this.allApps
   }
 
-  setPendingHostCommands(requests: HostCommandRequest[]) {
-    this.pendingHostCommands = requests
+  setPendingHostOperatorRequests(requests: HostOperatorRequest[]) {
+    this.pendingHostOperatorRequests = requests
       .filter((request) => request.status === 'pending')
       .sort((a, b) => a.createdAt - b.createdAt)
     this.emit('change')
   }
 
-  upsertHostCommandRequest(request: HostCommandRequest) {
-    const others = this.pendingHostCommands.filter((item) => item.requestId !== request.requestId)
+  upsertHostOperatorRequest(request: HostOperatorRequest) {
+    const others = this.pendingHostOperatorRequests.filter((item) => item.requestId !== request.requestId)
     if (request.status === 'pending') {
       others.push(request)
     }
-    this.pendingHostCommands = others.sort((a, b) => a.createdAt - b.createdAt)
+    this.pendingHostOperatorRequests = others.sort((a, b) => a.createdAt - b.createdAt)
     this.emit('change')
   }
 

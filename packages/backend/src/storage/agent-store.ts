@@ -1,36 +1,93 @@
 import { getDb } from './database.js'
 import { newId } from '../utils/ids.js'
-import type { Agent, CreateAgent, HostExecApprovalModeType, Message } from '@dune/shared'
+import type {
+  Agent,
+  AgentRoleType,
+  AgentWorkModeType,
+  CreateAgent,
+  HostOperatorApprovalModeType,
+  Message,
+} from '@dune/shared'
 
-const DEFAULT_HOST_EXEC_APPROVAL_MODE: HostExecApprovalModeType = 'approval-required'
+const DEFAULT_HOST_OPERATOR_APPROVAL_MODE: HostOperatorApprovalModeType = 'approval-required'
+const DEFAULT_AGENT_ROLE: AgentRoleType = 'follower'
+const DEFAULT_AGENT_WORK_MODE: AgentWorkModeType = 'normal'
 const AGENT_SELECT_COLUMNS = [
   'id',
   'name',
   'personality',
-  'host_exec_approval_mode as hostExecApprovalMode',
+  'role',
+  'work_mode as workMode',
+  'model_id_override as modelIdOverride',
+  'host_operator_approval_mode as hostOperatorApprovalMode',
+  'host_operator_apps_json as hostOperatorAppsJson',
+  'host_operator_paths_json as hostOperatorPathsJson',
   'status',
   'avatar_color as avatarColor',
   'created_at as createdAt',
 ].join(', ')
 
+type AgentRow = Agent & {
+  hostOperatorAppsJson?: string
+  hostOperatorPathsJson?: string
+}
+
+function parseJsonArray(value: unknown): string[] {
+  try {
+    const parsed = JSON.parse(String(value ?? '[]'))
+    if (!Array.isArray(parsed)) return []
+    return parsed.map((item) => String(item))
+  } catch {
+    return []
+  }
+}
+
+function normalizeAgent(row: AgentRow): Agent {
+  return {
+    ...row,
+    hostOperatorApps: parseJsonArray(row.hostOperatorAppsJson),
+    hostOperatorPaths: parseJsonArray(row.hostOperatorPathsJson),
+  }
+}
+
+function getDefaultWorkMode(role: AgentRoleType): AgentWorkModeType {
+  return role === 'leader' ? 'plan-first' : DEFAULT_AGENT_WORK_MODE
+}
+
+function getDefaultModelIdOverride(role: AgentRoleType): string | null {
+  return role === 'leader' ? 'opus' : null
+}
+
 export function createAgent(data: CreateAgent): Agent {
   const db = getDb()
+  const role = data.role ?? DEFAULT_AGENT_ROLE
   const agent: Agent = {
     id: newId(),
     name: data.name,
     personality: data.personality,
-    hostExecApprovalMode: DEFAULT_HOST_EXEC_APPROVAL_MODE,
+    role,
+    workMode: data.workMode ?? getDefaultWorkMode(role),
+    modelIdOverride: data.modelIdOverride === undefined ? getDefaultModelIdOverride(role) : data.modelIdOverride,
+    hostOperatorApprovalMode: DEFAULT_HOST_OPERATOR_APPROVAL_MODE,
+    hostOperatorApps: [],
+    hostOperatorPaths: [],
     status: 'stopped',
     avatarColor: data.avatarColor || randomColor(),
     createdAt: Date.now(),
   }
   db.prepare(
-    'INSERT INTO agents (id, name, personality, host_exec_approval_mode, status, avatar_color, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    'INSERT INTO agents (id, name, personality, role, work_mode, model_id_override, host_exec_approval_mode, host_operator_approval_mode, host_operator_apps_json, host_operator_paths_json, status, avatar_color, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
   ).run(
     agent.id,
     agent.name,
     agent.personality,
-    agent.hostExecApprovalMode,
+    agent.role,
+    agent.workMode,
+    agent.modelIdOverride,
+    agent.hostOperatorApprovalMode,
+    agent.hostOperatorApprovalMode,
+    JSON.stringify(agent.hostOperatorApps),
+    JSON.stringify(agent.hostOperatorPaths),
     agent.status,
     agent.avatarColor,
     agent.createdAt,
@@ -39,16 +96,18 @@ export function createAgent(data: CreateAgent): Agent {
 }
 
 export function listAgents(): Agent[] {
-  return getDb().prepare(`SELECT ${AGENT_SELECT_COLUMNS} FROM agents`).all() as Agent[]
+  const rows = getDb().prepare(`SELECT ${AGENT_SELECT_COLUMNS} FROM agents`).all() as AgentRow[]
+  return rows.map(normalizeAgent)
 }
 
 export function getAgent(id: string): Agent | undefined {
-  return getDb().prepare(`SELECT ${AGENT_SELECT_COLUMNS} FROM agents WHERE id = ?`).get(id) as Agent | undefined
+  const row = getDb().prepare(`SELECT ${AGENT_SELECT_COLUMNS} FROM agents WHERE id = ?`).get(id) as AgentRow | undefined
+  return row ? normalizeAgent(row) : undefined
 }
 
 export function updateAgent(
   id: string,
-  data: Partial<Pick<Agent, 'name' | 'personality' | 'hostExecApprovalMode' | 'status' | 'avatarColor'>>,
+  data: Partial<Pick<Agent, 'name' | 'personality' | 'role' | 'workMode' | 'modelIdOverride' | 'hostOperatorApprovalMode' | 'hostOperatorApps' | 'hostOperatorPaths' | 'status' | 'avatarColor'>>,
 ): Agent | undefined {
   const agent = getAgent(id)
   if (!agent) return undefined
@@ -56,10 +115,15 @@ export function updateAgent(
   const values: any[] = []
   if (data.name !== undefined) { updates.push('name = ?'); values.push(data.name) }
   if (data.personality !== undefined) { updates.push('personality = ?'); values.push(data.personality) }
-  if (data.hostExecApprovalMode !== undefined) {
-    updates.push('host_exec_approval_mode = ?')
-    values.push(data.hostExecApprovalMode)
+  if (data.role !== undefined) { updates.push('role = ?'); values.push(data.role) }
+  if (data.workMode !== undefined) { updates.push('work_mode = ?'); values.push(data.workMode) }
+  if (data.modelIdOverride !== undefined) { updates.push('model_id_override = ?'); values.push(data.modelIdOverride) }
+  if (data.hostOperatorApprovalMode !== undefined) {
+    updates.push('host_operator_approval_mode = ?')
+    values.push(data.hostOperatorApprovalMode)
   }
+  if (data.hostOperatorApps !== undefined) { updates.push('host_operator_apps_json = ?'); values.push(JSON.stringify(data.hostOperatorApps)) }
+  if (data.hostOperatorPaths !== undefined) { updates.push('host_operator_paths_json = ?'); values.push(JSON.stringify(data.hostOperatorPaths)) }
   if (data.status !== undefined) { updates.push('status = ?'); values.push(data.status) }
   if (data.avatarColor !== undefined) { updates.push('avatar_color = ?'); values.push(data.avatarColor) }
   if (updates.length > 0) {

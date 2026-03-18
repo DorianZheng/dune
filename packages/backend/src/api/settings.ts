@@ -6,9 +6,11 @@ import { config } from '../config.js'
 
 export const settingsApi = new Hono()
 const SELECTED_MODEL_PROVIDERS = new Set<SelectedModelProvider>(['claude', null])
+const CLAUDE_MODEL_ID_PATTERN = /^[A-Za-z0-9._:-]+$/
 
 const CLAUDE_SETTINGS_KEYS = new Set([
   'selectedModelProvider',
+  'defaultModelId',
   'anthropicApiKey',
   'claudeCodeOAuthToken',
   'anthropicAuthToken',
@@ -47,6 +49,14 @@ function parseClaudeSettingsUpdate(body: unknown): { value: ClaudeSettingsUpdate
       ;(patch as Record<string, string | null>)[key] = normalized
       continue
     }
+    if (key === 'defaultModelId') {
+      const normalized = rawValue == null ? null : rawValue.trim() || null
+      if (normalized && !CLAUDE_MODEL_ID_PATTERN.test(normalized)) {
+        return { value: null, error: `Field ${key} must be a valid Claude model alias or id` }
+      }
+      ;(patch as Record<string, string | null>)[key] = normalized
+      continue
+    }
     ;(patch as Record<string, string | null>)[key] = rawValue as string | null
   }
 
@@ -60,6 +70,7 @@ settingsApi.get('/claude', (c) => {
 settingsApi.get('/admin-plane', (c) => {
   return c.json({
     hostCommandAdminBaseUrl: `http://127.0.0.1:${config.adminPort}`,
+    hostOperatorAdminBaseUrl: `http://127.0.0.1:${config.adminPort}`,
   })
 })
 

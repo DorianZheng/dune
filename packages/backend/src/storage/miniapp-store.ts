@@ -26,7 +26,7 @@ export type MiniAppStoreOptions = {
 
 function getMiniAppRoot(agentId: string, options?: MiniAppStoreOptions): string {
   if (options?.rootPath) return resolve(options.rootPath)
-  return join(config.agentsRoot, agentId, 'miniapps')
+  return join(config.agentsRoot, agentId, '.dune', 'miniapps')
 }
 
 function normalizeSlug(input: string): string | null {

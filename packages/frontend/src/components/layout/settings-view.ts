@@ -20,6 +20,7 @@ export class SettingsView extends LitElement {
   @state() private claudeStatusMessage = ''
 
   @state() private selectedModelProviderDraft: SelectedModelProvider | null = null
+  @state() private defaultModelIdDraft = ''
   @state() private anthropicApiKeyDraft = ''
   @state() private claudeCodeOAuthTokenDraft = ''
   @state() private anthropicAuthTokenDraft = ''
@@ -34,7 +35,8 @@ export class SettingsView extends LitElement {
     :host {
       display: block;
       height: 100%;
-      background: var(--bg-primary);
+      background: transparent;
+      padding: 18px;
     }
 
     .layout {
@@ -42,36 +44,28 @@ export class SettingsView extends LitElement {
       display: grid;
       grid-template-columns: var(--settings-nav-width) minmax(0, 1fr);
       min-height: 0;
+      gap: 14px;
     }
 
     .nav {
-      background: var(--sidebar-bg);
-      padding: 12px 8px 12px;
+      background: var(--glass-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 24px;
+      padding: 14px 10px 12px;
       display: flex;
       flex-direction: column;
       min-height: 0;
-      gap: 10px;
-      position: relative;
-      isolation: isolate;
-    }
-
-    .nav::after {
-      content: '';
-      position: absolute;
-      top: 0;
-      right: 0;
-      width: var(--split-shadow-width);
-      height: 100%;
-      background: var(--split-shadow-strip);
-      pointer-events: none;
-      z-index: 2;
+      gap: 12px;
+      box-shadow: var(--shadow-sm);
+      backdrop-filter: blur(18px) saturate(150%);
+      -webkit-backdrop-filter: blur(18px) saturate(150%);
     }
 
     .back-btn {
       width: 100%;
       min-height: var(--control-height);
-      border: none;
-      border-radius: var(--radius-sm);
+      border: 1px solid transparent;
+      border-radius: 14px;
       background: transparent;
       color: var(--text-secondary);
       font-size: var(--text-secondary-size);
@@ -86,6 +80,7 @@ export class SettingsView extends LitElement {
 
     .back-btn:hover {
       background: var(--bg-hover);
+      border-color: var(--border-light);
       color: var(--text-primary);
     }
 
@@ -102,14 +97,14 @@ export class SettingsView extends LitElement {
     .nav-list {
       display: flex;
       flex-direction: column;
-      gap: 3px;
+      gap: 5px;
     }
 
     .nav-item {
       width: 100%;
       min-height: var(--sidebar-row-height);
-      border: none;
-      border-radius: var(--radius-sm);
+      border: 1px solid transparent;
+      border-radius: 16px;
       background: transparent;
       color: var(--text-secondary);
       font-size: var(--text-body-size);
@@ -125,55 +120,67 @@ export class SettingsView extends LitElement {
     .nav-item:hover,
     .nav-item.active {
       background: var(--bg-hover);
+      border-color: var(--row-selected-border);
+      box-shadow: var(--shadow-sm);
       color: var(--text-primary);
     }
 
     .content {
       min-height: 0;
       overflow-y: auto;
-      padding: 14px 16px 20px;
-      background: var(--bg-primary);
+      padding: 22px 24px 28px;
+      background: var(--glass-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 26px;
+      box-shadow: var(--shadow-sm);
+      backdrop-filter: blur(18px) saturate(150%);
+      -webkit-backdrop-filter: blur(18px) saturate(150%);
     }
 
     .top {
-      min-height: var(--header-height);
+      min-height: 78px;
       display: flex;
-      align-items: center;
+      align-items: flex-end;
       justify-content: flex-start;
       gap: 10px;
-      margin-bottom: 14px;
+      margin-bottom: 18px;
     }
 
     .title {
-      font-size: var(--text-display-size);
-      font-weight: 600;
+      font-size: clamp(28px, 3vw, 36px);
+      font-weight: 640;
       color: var(--text-primary);
+      letter-spacing: -0.03em;
     }
 
     .section {
-      margin-top: 10px;
+      margin-top: 14px;
     }
 
     .section-title {
-      font-size: var(--text-title-size);
+      font-size: 12px;
       font-weight: 600;
-      color: var(--text-primary);
-      margin-bottom: 8px;
+      color: var(--text-muted);
+      margin-bottom: 10px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
     }
 
     .card {
-      border-radius: var(--radius-lg);
-      background: var(--bg-surface);
+      border-radius: 20px;
+      background: color-mix(in srgb, var(--bg-surface) 82%, transparent);
       overflow: visible;
-      padding: 3px;
+      padding: 4px;
+      border: 1px solid var(--border-light);
     }
 
     .settings-card {
-      border-radius: var(--radius-lg);
-      background: var(--bg-surface);
-      padding: 12px;
+      border-radius: 20px;
+      background: color-mix(in srgb, var(--bg-surface) 86%, transparent);
+      padding: 14px;
       display: grid;
-      gap: 12px;
+      gap: 14px;
+      border: 1px solid var(--border-light);
     }
 
     .row {
@@ -181,9 +188,10 @@ export class SettingsView extends LitElement {
       grid-template-columns: minmax(0, 1fr) auto;
       gap: 12px;
       align-items: center;
-      padding: 10px 12px;
-      border-radius: var(--radius-sm);
-      background: var(--bg-surface);
+      padding: 14px 16px;
+      border-radius: 18px;
+      background: color-mix(in srgb, var(--bg-surface) 78%, transparent);
+      border: 1px solid var(--border-light);
     }
 
     .row-copy {
@@ -211,7 +219,7 @@ export class SettingsView extends LitElement {
       align-items: center;
       gap: 4px;
       border-radius: 999px;
-      background: color-mix(in srgb, var(--bg-hover) 75%, transparent);
+      background: color-mix(in srgb, var(--bg-hover) 84%, transparent);
       padding: 3px;
       max-width: 100%;
       overflow-x: auto;
@@ -236,21 +244,22 @@ export class SettingsView extends LitElement {
     }
 
     .segment.active {
-      background: var(--bg-hover);
+      background: var(--sidebar-selected);
       color: var(--text-primary);
     }
 
     .field-grid {
       display: grid;
-      gap: 10px;
+      gap: 12px;
     }
 
     .field {
-      padding: 10px;
-      border-radius: var(--radius-sm);
-      background: color-mix(in srgb, var(--bg-hover) 70%, transparent);
+      padding: 14px;
+      border-radius: 18px;
+      background: color-mix(in srgb, var(--bg-hover) 72%, transparent);
       display: grid;
-      gap: 7px;
+      gap: 8px;
+      border: 1px solid var(--border-light);
     }
 
     .field-top {
@@ -396,6 +405,7 @@ export class SettingsView extends LitElement {
 
   private resetSettingsDrafts(settings: ClaudeSettings) {
     this.selectedModelProviderDraft = settings.selectedModelProvider ?? null
+    this.defaultModelIdDraft = settings.defaultModelId ?? ''
     this.anthropicApiKeyDraft = ''
     this.claudeCodeOAuthTokenDraft = ''
     this.anthropicAuthTokenDraft = ''
@@ -434,6 +444,11 @@ export class SettingsView extends LitElement {
 
     if (this.selectedModelProviderDraft !== (currentSettings?.selectedModelProvider ?? null)) {
       patch.selectedModelProvider = this.selectedModelProviderDraft
+    }
+    const nextDefaultModelId = this.defaultModelIdDraft.trim()
+    const currentDefaultModelId = currentSettings?.defaultModelId ?? ''
+    if (nextDefaultModelId !== currentDefaultModelId) {
+      patch.defaultModelId = nextDefaultModelId || null
     }
 
     const nextBaseUrl = this.anthropicBaseUrlDraft.trim()
@@ -556,6 +571,21 @@ export class SettingsView extends LitElement {
     `
   }
 
+  private renderDefaultModelOption(label: string, value: string | null) {
+    const active = (this.defaultModelIdDraft.trim() || null) === value
+    return html`
+      <button
+        class="segment ${active ? 'active' : ''}"
+        type="button"
+        aria-pressed=${active}
+        @click=${() => {
+          this.defaultModelIdDraft = value ?? ''
+          this.clearClaudeStatusMessage()
+        }}
+      >${label}</button>
+    `
+  }
+
   private secretStatus(hasValue: boolean, draft: string, clearFlag: boolean): { label: string; tone: '' | 'success' | 'warn' } {
     if (draft.trim()) return { label: 'Will update', tone: 'warn' }
     if (clearFlag) return { label: 'Will clear', tone: 'warn' }
@@ -612,6 +642,7 @@ export class SettingsView extends LitElement {
       this.clearAnthropicAuthToken,
     )
     const providerLabel = this.selectedModelProviderDraft === 'claude' ? 'Claude selected' : 'Not set'
+    const defaultModelLabel = this.defaultModelIdDraft.trim() || 'Claude CLI default'
 
     return html`
       <section class="section">
@@ -638,6 +669,22 @@ export class SettingsView extends LitElement {
                   this.clearClaudeStatusMessage()
                 }}
               >Clear selection</button>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="field-top">
+              <div class="field-title">Workspace default Claude model</div>
+              <div class="field-status ${this.defaultModelIdDraft.trim() ? 'success' : ''}">${defaultModelLabel}</div>
+            </div>
+            <div class="field-help">Optional Claude model alias passed as <code>--model</code>. Leave unset to use Claude Code&apos;s own default.</div>
+            <div class="field-actions">
+              <div class="segmented" role="radiogroup" aria-label="Default Claude model">
+                ${this.renderDefaultModelOption('Claude default', null)}
+                ${this.renderDefaultModelOption('Sonnet', 'sonnet')}
+                ${this.renderDefaultModelOption('Opus', 'opus')}
+                ${this.renderDefaultModelOption('Haiku', 'haiku')}
+              </div>
             </div>
           </div>
         </div>
