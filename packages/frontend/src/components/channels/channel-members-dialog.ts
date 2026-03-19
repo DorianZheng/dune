@@ -1,7 +1,7 @@
 import { LitElement, html, css } from 'lit'
 import { customElement, property, query, state as litState } from 'lit/decorators.js'
 import type { Agent } from '@dune/shared'
-import * as api from '../../services/api-client.js'
+import * as api from '../../services/rpc.js'
 
 @customElement('channel-members-dialog')
 export class ChannelMembersDialog extends LitElement {

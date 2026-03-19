@@ -1,7 +1,7 @@
 import { LitElement, html, css } from 'lit'
 import { customElement, property, state as litState } from 'lit/decorators.js'
 import type { AgentMount } from '@dune/shared'
-import * as api from '../../services/api-client.js'
+import * as api from '../../services/rpc.js'
 
 @customElement('agent-mounts-panel')
 export class AgentMountsPanel extends LitElement {

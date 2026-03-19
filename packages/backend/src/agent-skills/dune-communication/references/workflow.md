@@ -1,39 +1,34 @@
 # Dune Communication Reference
 
-## Proxy Endpoints
+## RPC Methods
 
-- `GET http://localhost:3200/channels`
-- `GET http://localhost:3200/agents`
-- `GET http://localhost:3200/mailbox`
-- `POST http://localhost:3200/mailbox/fetch`
-- `POST http://localhost:3200/mailbox/ack`
-- `GET http://localhost:3200/messages?channel=<name>&limit=<n>&before=<timestamp>`
-- `POST http://localhost:3200/send`
+All communication uses the RPC tool:
+```bash
+RPC_CMD="${RPC_CMD:-python3 $DUNE_RPC_SCRIPT}"
+```
+
+Available methods:
+- `channels.list '{}'`
+- `agents.list '{}'`
+- `agents.getMailbox '{"id":"$AGENT_ID"}'`
+- `agents.fetchMailbox '{"id":"$AGENT_ID"}'`
+- `agents.ackMailbox '{"id":"$AGENT_ID","batchId":"BATCH_ID"}'`
+- `channels.getMessages '{"channelId":"CHANNEL_ID","limit":50}'`
+- `channels.sendMessage '{"channelId":"CHANNEL_ID","authorId":"$AGENT_ID","content":"message"}'`
 
 ## Safe Send Pattern
 
-1. Write payload to file:
+Use the send-channel-message.sh script which handles channel name resolution:
 
 ```bash
-cat > /tmp/msg.json <<'JSON'
-{"channel":"general","content":"status update"}
-JSON
+scripts/send-channel-message.sh general "status update"
 ```
 
-2. Send:
+Or directly via RPC:
 
 ```bash
-curl -sS -X POST http://localhost:3200/send \
-  -H 'Content-Type: application/json' \
-  -d @/tmp/msg.json
+$RPC_CMD channels.sendMessage "$(python3 -c "import json; print(json.dumps({'channelId':'CHANNEL_ID','authorId':'$AGENT_ID','content':'message'}))")"
 ```
-
-3. Success shape includes message metadata:
-- `id`
-- `channelId`
-- `authorId`
-- `content`
-- `timestamp`
 
 ## Response Discipline
 

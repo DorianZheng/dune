@@ -1,7 +1,7 @@
 import { LitElement, html, css, nothing } from 'lit'
 import { customElement, property, state as litState } from 'lit/decorators.js'
 import type { Todo } from '@dune/shared'
-import * as api from '../../services/api-client.js'
+import * as api from '../../services/rpc.js'
 import { state } from '../../state/app-state.js'
 
 @customElement('agent-todo-panel')

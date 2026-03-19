@@ -1,6 +1,6 @@
 import { LitElement, html, css } from 'lit'
 import { customElement, property, state as litState } from 'lit/decorators.js'
-import * as api from '../../services/api-client.js'
+import * as api from '../../services/rpc.js'
 
 @customElement('agent-computer-tab')
 export class AgentComputerTab extends LitElement {

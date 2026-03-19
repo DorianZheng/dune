@@ -19,20 +19,27 @@ const STOP_GRACE_MS = 5_000
 export class SidecarManager extends EventEmitter {
   private child: UtilityProcess | null = null
   private _port = 0
+  private _clientPort = 0
   private intentionalStop = false
 
   get port(): number {
     return this._port
   }
 
+  get clientPort(): number {
+    return this._clientPort
+  }
+
   async start(): Promise<number> {
     this._port = await findFreePort(20000 + Math.floor(Math.random() * 30000))
-    const adminPort = this._port + 1
+    this._clientPort = await findFreePort(this._port + 1)
+    const adminPort = await findFreePort(this._clientPort + 1)
 
     const backendEntry = getBackendEntryPath()
     const env: Record<string, string> = {
       ...process.env as Record<string, string>,
       PORT: String(this._port),
+      CLIENT_PORT: String(this._clientPort),
       ADMIN_PORT: String(adminPort),
       DATA_DIR: getDataDir(),
       FRONTEND_DIST_PATH: getFrontendDistPath(),
@@ -67,8 +74,8 @@ export class SidecarManager extends EventEmitter {
     })
 
     await this.waitForHealth()
-    console.log(`Backend sidecar ready on port ${this._port}`)
-    return this._port
+    console.log(`Backend sidecar ready (agent=${this._port}, client=${this._clientPort})`)
+    return this._clientPort
   }
 
   async stop(): Promise<void> {
@@ -97,7 +104,7 @@ export class SidecarManager extends EventEmitter {
           return
         }
 
-        const req = http.get(`http://127.0.0.1:${this._port}/health`, (res) => {
+        const req = http.get(`http://127.0.0.1:${this._clientPort}/health`, (res) => {
           if (res.statusCode === 200) {
             res.resume()
             resolve()

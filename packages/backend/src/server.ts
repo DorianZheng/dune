@@ -11,13 +11,13 @@ import { messagesApi } from './api/messages.js'
 import { sandboxesApi } from './api/sandboxes.js'
 import { todosApi } from './api/todos.js'
 import { settingsApi } from './api/settings.js'
-import { adminHostCommandsApi } from './api/admin-host-commands.js'
 import { adminHostOperatorApi } from './api/admin-host-operator.js'
-import { setupWebSocket } from './websocket/ws-server.js'
+import { setupAgentGateway, setupClientGateway } from './gateway/transport.js'
 import { reloadTimers } from './todos/todo-timer.js'
 import { stopAllAgents, closeRuntime } from './agents/agent-manager.js'
 import { stopAllSandboxes, closeSandboxRuntime } from './sandboxes/sandbox-manager.js'
 import { config } from './config.js'
+import { findFreePort } from './utils/port-finder.js'
 import {
   startAgentLogRetentionSweepScheduler,
   stopAgentLogRetentionSweepScheduler,
@@ -28,39 +28,35 @@ const frontendDistAbsolutePath = resolve(config.frontendDistPath)
 const frontendDistRoot = relative(process.cwd(), frontendDistAbsolutePath) || '.'
 const hasFrontendBuild = existsSync(join(frontendDistAbsolutePath, 'index.html'))
 
+// ── Agent App (REST + /ws/agent + terminal) ───────────────────────────
+
 export const app = new Hono()
 app.use('/*', cors())
 
-export const adminApp = new Hono()
-adminApp.use('/*', cors())
-
-// Global error handler — catches JSON parse errors, DB constraint violations, etc.
 app.onError((err, c) => {
   const msg = err.message || 'Internal Server Error'
-  if (msg.includes('UNIQUE constraint')) {
-    return c.json({ error: 'Already exists' }, 409)
-  }
-  if (msg.includes('FOREIGN KEY constraint')) {
-    return c.json({ error: 'Referenced resource not found' }, 400)
-  }
-  if (err instanceof SyntaxError && (msg.includes('JSON') || msg.includes('Unexpected'))) {
-    return c.json({ error: 'Invalid JSON body' }, 400)
-  }
+  if (msg.includes('UNIQUE constraint')) return c.json({ error: 'Already exists' }, 409)
+  if (msg.includes('FOREIGN KEY constraint')) return c.json({ error: 'Referenced resource not found' }, 400)
+  if (err instanceof SyntaxError && (msg.includes('JSON') || msg.includes('Unexpected'))) return c.json({ error: 'Invalid JSON body' }, 400)
   console.error('Unhandled error:', err)
   return c.json({ error: msg }, 500)
 })
 
 app.get('/health', (c) => c.json({ status: 'ok' }))
 
-// Mount API routes
+// REST routes (backward compat for sandbox scripts)
 app.route('/api/channels', channelsApi)
 app.route('/api/agents', agentsApi)
 app.route('/api/messages', messagesApi)
 app.route('/api/sandboxes', sandboxesApi)
 app.route('/api/todos', todosApi)
 app.route('/api/settings', settingsApi)
-adminApp.route('/api/admin', adminHostCommandsApi)
-adminApp.route('/api/admin', adminHostOperatorApi)
+
+// ── Client App (SPA + /ws/client) ─────────────────────────────────────
+
+export const clientApp = new Hono()
+clientApp.use('/*', cors())
+clientApp.get('/health', (c) => c.json({ status: 'ok' }))
 
 function isReservedFrontendPath(path: string): boolean {
   return path === '/api'
@@ -79,71 +75,91 @@ if (hasFrontendBuild) {
   const staticMiddleware = serveStatic({ root: frontendDistRoot })
   const indexMiddleware = serveStatic({ root: frontendDistRoot, path: 'index.html' })
 
-  app.use('*', async (c, next) => {
-    if (isReservedFrontendPath(c.req.path)) {
-      return next()
-    }
+  clientApp.use('*', async (c, next) => {
+    if (isReservedFrontendPath(c.req.path)) return next()
     return staticMiddleware(c, next)
   })
 
-  app.get('*', async (c, next) => {
-    if (!isSpaRoute(c.req.path)) {
-      return next()
-    }
+  clientApp.get('*', async (c, next) => {
+    if (!isSpaRoute(c.req.path)) return next()
     return indexMiddleware(c, next)
   })
 }
 
+// ── Admin App ─────────────────────────────────────────────────────────
+
+export const adminApp = new Hono()
+adminApp.use('/*', cors())
+adminApp.route('/api/admin', adminHostOperatorApi)
+
+// ── Port allocation ───────────────────────────────────────────────────
+
+const PORT_RANGE_START = 20000
+
+async function resolvePort(configured: number): Promise<number> {
+  if (configured > 0) return configured
+  return findFreePort(PORT_RANGE_START + Math.floor(Math.random() * 30000))
+}
+
+// ── Start ─────────────────────────────────────────────────────────────
+
 export async function startServer() {
-  const mainPort = config.port
-  const adminPortResolved = config.adminPort
+  const agentPort = await resolvePort(config.port)
+  const resolvedClientPort = await resolvePort(config.clientPort)
+  const resolvedAdminPort = await resolvePort(config.adminPort)
 
-  const server = serve({ fetch: app.fetch, port: mainPort }, (info) => {
-    console.log(`Dune backend listening on port ${info.port}`)
-    if (hasFrontendBuild) {
-      console.log(`Serving frontend from ${frontendDistAbsolutePath}`)
-    }
-    // Write port file so frontend dev server can proxy to us
-    try {
-      writeFileSync(join(__dirname, '../.port'), String(info.port))
-    } catch {}
-    // Notify parent process (Electron sidecar) that we're ready
-    if (process.send) {
-      process.send({ type: 'listening', port: info.port, adminPort: adminPortResolved })
-    }
+  // Server A: Agent gateway (REST + /ws/agent + terminal)
+  const agentServer = serve({ fetch: app.fetch, port: agentPort }, (info) => {
+    console.log(`Dune agent gateway listening on port ${info.port}`)
   })
-
-  // Handle port-in-use errors (common with --watch restarts)
-  ;(server as any).on?.('error', (err: NodeJS.ErrnoException) => {
-    if (err.code === 'EADDRINUSE') {
-      console.error(`Port ${mainPort} is already in use.`)
-      process.exit(1)
-    }
+  ;(agentServer as any).on?.('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') { console.error(`Agent port ${agentPort} is already in use.`); process.exit(1) }
   })
+  setupAgentGateway(agentServer as any)
 
+  // Server B: Client gateway (SPA + /ws/client)
+  const clientServer = serve({ fetch: clientApp.fetch, port: resolvedClientPort }, (info) => {
+    console.log(`Dune client gateway listening on port ${info.port}`)
+    if (hasFrontendBuild) console.log(`Serving frontend from ${frontendDistAbsolutePath}`)
+  })
+  ;(clientServer as any).on?.('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') { console.error(`Client port ${resolvedClientPort} is already in use.`); process.exit(1) }
+  })
+  setupClientGateway(clientServer as any)
+
+  // Server C: Admin (localhost only)
   const adminServer = serve({
     fetch: adminApp.fetch,
-    port: adminPortResolved,
+    port: resolvedAdminPort,
     hostname: '127.0.0.1',
   }, (info) => {
     console.log(`Dune admin plane listening on 127.0.0.1:${info.port}`)
   })
-
   ;(adminServer as any).on?.('error', (err: NodeJS.ErrnoException) => {
-    if (err.code === 'EADDRINUSE') {
-      console.error(`Admin port ${adminPortResolved} is already in use.`)
-      process.exit(1)
-    }
+    if (err.code === 'EADDRINUSE') { console.error(`Admin port ${resolvedAdminPort} is already in use.`); process.exit(1) }
   })
 
-  setupWebSocket(server as any)
+  // Write port file (JSON format) for frontend dev server and agent-manager
+  try {
+    writeFileSync(
+      join(__dirname, '../.port'),
+      JSON.stringify({ agentPort, clientPort: resolvedClientPort, adminPort: resolvedAdminPort }),
+    )
+  } catch {}
+
+  // Notify parent process (Electron sidecar)
+  if (process.send) {
+    process.send({ type: 'listening', port: agentPort, clientPort: resolvedClientPort, adminPort: resolvedAdminPort })
+  }
+
   reloadTimers()
   startAgentLogRetentionSweepScheduler()
 
   // Graceful shutdown
   const shutdown = async () => {
     console.log('Shutting down...')
-    server.close()
+    agentServer.close()
+    clientServer.close()
     adminServer.close()
     stopAgentLogRetentionSweepScheduler()
     await stopAllSandboxes()
@@ -155,5 +171,5 @@ export async function startServer() {
   process.on('SIGTERM', shutdown)
   process.on('SIGINT', shutdown)
 
-  return { server, adminServer }
+  return { server: agentServer, clientServer, adminServer }
 }

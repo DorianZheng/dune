@@ -1,11 +1,11 @@
 ---
 name: dune-sandbox-operator
-description: Operate Dune sandbox APIs via localhost proxy.
+description: Operate Dune sandbox APIs via agent gateway.
 ---
 
 # Dune Sandbox Operator
 
-All endpoints at `http://localhost:3200/sandboxes/v1/...` — proxy injects system actor headers automatically.
+All endpoints at `${DUNE_AGENT_URL}/sandboxes/v1/...` — actor identity injected via env vars automatically.
 
 ## Scripts
 - `scripts/sandbox-box.sh` — lifecycle: list, create, start, stop, delete, status

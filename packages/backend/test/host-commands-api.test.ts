@@ -133,9 +133,6 @@ test('legacy host exec endpoints return 410', async () => {
     body: JSON.stringify({ command: 'pwd' }),
   })
   assert.equal(mainPlane.status, 410)
-
-  const adminPending = await adminApp.request('/api/admin/host-commands/pending')
-  assert.equal(adminPending.status, 410)
 })
 
 test('host operator creation enforces system actor identity and bundle allowlists', async () => {

@@ -11,7 +11,7 @@ METHOD="$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')"
 PATH_PART="$2"
 shift 2
 
-BASE_URL="${SANDBOX_PROXY_URL:-http://localhost:3200}"
+BASE_URL="${DUNE_AGENT_URL:?DUNE_AGENT_URL env var not set}"
 URL="${BASE_URL}${PATH_PART}"
 
 BODY_ARG=""
@@ -27,6 +27,7 @@ if [[ $# -gt 0 ]]; then
 fi
 
 CURL_ARGS=("-sS" "-X" "$METHOD" "$URL")
+CURL_ARGS+=("-H" "X-Actor-Type: system" "-H" "X-Actor-Id: agent:${AGENT_ID:?AGENT_ID env var not set}")
 
 if [[ -n "$BODY_ARG" ]]; then
   if [[ "$BODY_ARG" == @* ]]; then

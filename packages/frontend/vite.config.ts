@@ -1,12 +1,23 @@
 import { defineConfig } from 'vite'
 import { readFileSync } from 'node:fs'
 
-function getBackendPort(): number {
+type PortConfig = { agentPort: number; clientPort: number; adminPort: number }
+
+let cachedConfig: PortConfig | null = null
+
+function readPortConfig(): PortConfig {
+  if (cachedConfig) return cachedConfig
   try {
-    const port = readFileSync('../backend/.port', 'utf-8').trim()
-    return parseInt(port, 10)
+    const raw = readFileSync('../backend/.port', 'utf-8').trim()
+    if (raw.startsWith('{')) {
+      cachedConfig = JSON.parse(raw)
+      return cachedConfig!
+    }
+    const port = parseInt(raw, 10)
+    cachedConfig = { agentPort: port, clientPort: port, adminPort: port + 1 }
+    return cachedConfig
   } catch {
-    return 3100
+    return { agentPort: 3100, clientPort: 3100, adminPort: 3101 }
   }
 }
 
@@ -17,24 +28,20 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': {
-        target: `http://localhost:${getBackendPort()}`,
+        target: `http://localhost:${readPortConfig().agentPort}`,
         changeOrigin: true,
         ws: true,
         configure: (proxy) => {
-          proxy.on('error', (err, _req, res) => {
-            console.error('[vite proxy error]', err.message)
-            if (res && 'writeHead' in res) {
-              ;(res as any).writeHead(502, { 'Content-Type': 'text/plain' })
-              ;(res as any).end(`Proxy error: ${err.message}`)
-            }
+          proxy.on('error', () => {
+            // Suppress proxy errors (backend may be restarting with --watch)
           })
         },
-        router: () => `http://localhost:${getBackendPort()}`,
+        router: () => `http://localhost:${readPortConfig().agentPort}`,
       },
       '/ws': {
-        target: `ws://localhost:${getBackendPort()}`,
+        target: `ws://localhost:${readPortConfig().clientPort}`,
         ws: true,
-        router: () => `ws://localhost:${getBackendPort()}`,
+        router: () => `ws://localhost:${readPortConfig().clientPort}`,
       },
     },
   },

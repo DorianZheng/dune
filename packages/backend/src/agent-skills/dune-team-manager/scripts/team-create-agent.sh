@@ -3,26 +3,26 @@
 # Usage: team-create-agent.sh "Agent Name" "Personality description"
 set -euo pipefail
 
-PROXY="http://localhost:3200"
+RPC_CMD="${RPC_CMD:-python3 $DUNE_RPC_SCRIPT}"
+
 NAME="${1:?Usage: team-create-agent.sh <name> <personality>}"
 PERSONALITY="${2:?Usage: team-create-agent.sh <name> <personality>}"
 
 # Create agent
-RESULT=$(curl -s -X POST "$PROXY/agents" \
-  -H "Content-Type: application/json" \
-  -d "{\"name\": $(echo "$NAME" | jq -Rs .), \"personality\": $(echo "$PERSONALITY" | jq -Rs .)}")
+PAYLOAD=$(python3 -c "import json,sys; print(json.dumps({'name': sys.argv[1], 'personality': sys.argv[2]}))" "$NAME" "$PERSONALITY")
+RESULT=$($RPC_CMD agents.create "$PAYLOAD")
 
-AGENT_ID=$(echo "$RESULT" | jq -r '.id // empty')
-if [ -z "$AGENT_ID" ]; then
+NEW_AGENT_ID=$(echo "$RESULT" | python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('id',''))")
+if [ -z "$NEW_AGENT_ID" ]; then
   echo "Failed to create agent: $RESULT" >&2
   exit 1
 fi
-echo "Created agent: $NAME (id: $AGENT_ID)"
+echo "Created agent: $NAME (id: $NEW_AGENT_ID)"
 
 # Start agent (this blocks until the agent container is fully ready)
 echo "Starting agent (this may take 2-3 minutes)..."
-START_RESULT=$(curl -s -X POST "$PROXY/agents/$AGENT_ID/start" --max-time 300)
-STATUS=$(echo "$START_RESULT" | jq -r '.status // .error // "unknown"')
+START_RESULT=$($RPC_CMD agents.start "{\"id\":\"$NEW_AGENT_ID\"}")
+STATUS=$(echo "$START_RESULT" | python3 -c "import json,sys; d=json.loads(sys.stdin.read()); print(d.get('status', d.get('error', 'unknown')))")
 echo "Agent start result: $STATUS"
 
-echo "$AGENT_ID"
+echo "$NEW_AGENT_ID"

@@ -1,7 +1,7 @@
 import { LitElement, html, css, nothing } from 'lit'
 import { customElement, property, state } from 'lit/decorators.js'
 import type { ClaudeSettings, ClaudeSettingsUpdate, SelectedModelProvider } from '@dune/shared'
-import { getClaudeSettings, updateClaudeSettings } from '../../services/api-client.js'
+import { getClaudeSettings, updateClaudeSettings } from '../../services/rpc.js'
 import type { ThemeMode } from '../../state/ui-preferences.js'
 
 type TrafficMode = 'inherit' | 'enabled' | 'disabled'

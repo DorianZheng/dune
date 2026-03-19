@@ -1,7 +1,7 @@
 # Sandbox API Matrix
 
 Base URL:
-- `http://localhost:3200/sandboxes/v1`
+- `${DUNE_AGENT_URL}/sandboxes/v1`
 
 ## Boxes
 
@@ -42,7 +42,6 @@ Base URL:
 
 ## Actor Identity
 
-No manual actor headers required from script callers.
-Proxy injects:
+Scripts inject actor headers automatically via env vars:
 - `X-Actor-Type: system`
-- `X-Actor-Id: agent:<AGENT_ID>`
+- `X-Actor-Id: agent:${AGENT_ID}`

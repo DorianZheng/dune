@@ -10,14 +10,16 @@ function resolveFromRepoRoot(pathValue: string): string {
   return isAbsolute(pathValue) ? pathValue : resolve(repoRoot, pathValue)
 }
 
-const port = parseInt(process.env.PORT || '3100', 10)
-const adminPort = parseInt(process.env.ADMIN_PORT || String(port + 1), 10)
+const port = parseInt(process.env.PORT || '0', 10)
+const clientPort = parseInt(process.env.CLIENT_PORT || '0', 10)
+const adminPort = parseInt(process.env.ADMIN_PORT || '0', 10)
 const dataRoot = resolveFromRepoRoot(process.env.DATA_DIR || './data')
 const boxliteDataPath = join(dataRoot, 'boxlite')
 
 export const config = {
   repoRoot,
   port,
+  clientPort,
   adminPort,
   dataRoot,
   agentsRoot: join(dataRoot, 'agents'),
@@ -25,7 +27,7 @@ export const config = {
   frontendDistPath: resolveFromRepoRoot(process.env.FRONTEND_DIST_PATH || './packages/frontend/dist'),
   hostOperatorHelperPath: resolveFromRepoRoot(process.env.HOST_OPERATOR_HELPER_PATH || './packages/backend/bin/dune-host-operator-helper'),
   agentSkillsPath: process.env.AGENT_SKILLS_PATH || join(backendPackageRoot, 'src', 'agent-skills'),
-  agentMcpPath: process.env.AGENT_MCP_PATH || join(backendPackageRoot, 'src', 'agent-mcp'),
+  agentMcpPath: process.env.AGENT_MCP_PATH || join(backendPackageRoot, 'src', 'agents', 'mcp'),
   agentPromptsPath: process.env.AGENT_PROMPTS_PATH || join(backendPackageRoot, 'src', 'agent-prompts'),
   boxliteDataPath,
   boxliteHome: ensureBoxliteHome(dataRoot),

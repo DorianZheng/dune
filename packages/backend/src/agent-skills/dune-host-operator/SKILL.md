@@ -5,7 +5,7 @@ description: Operate allowed host apps and files through the localhost host-oper
 
 # Dune Host Operator
 
-Use the localhost host-operator proxy at `http://localhost:3200/host/v1/...`.
+Use the host-operator scripts which call via RPC.
 
 ## Safety rules
 - Host operator requests require human admin approval by default.

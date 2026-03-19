@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 API_SCRIPT="${SCRIPT_DIR}/sandbox-api.sh"
-BASE_URL="${SANDBOX_PROXY_URL:-http://localhost:3200}"
+BASE_URL="${DUNE_AGENT_URL:?DUNE_AGENT_URL env var not set}"
 
 usage() {
   cat >&2 <<'USAGE'
@@ -59,6 +59,7 @@ PY
     ENCODED_PATH="$(url_encode "$CONTAINER_PATH")"
     curl -sS -X POST \
       -H 'Content-Type: application/octet-stream' \
+      -H "X-Actor-Type: system" -H "X-Actor-Id: agent:${AGENT_ID}" \
       --data-binary "@${HOST_FILE}" \
       "${BASE_URL}/sandboxes/v1/boxes/${BOX_ID}/files?path=${ENCODED_PATH}&overwrite=${OVERWRITE}"
     ;;

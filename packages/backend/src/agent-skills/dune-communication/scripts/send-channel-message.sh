@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+RPC_CMD="${RPC_CMD:-python3 $DUNE_RPC_SCRIPT}"
+
 if [[ $# -lt 2 ]]; then
   echo "Usage: $0 <channel> <message...>" >&2
   exit 1
@@ -9,18 +11,17 @@ fi
 CHANNEL="$1"
 shift
 CONTENT="$*"
-PAYLOAD_FILE="${TMP_JSON_PATH:-/tmp/msg.json}"
 
-python3 - "$CHANNEL" "$CONTENT" "$PAYLOAD_FILE" <<'PY'
-import json
-import pathlib
-import sys
+# Resolve channel name to ID
+CHANNEL_RESULT=$($RPC_CMD channels.getByName "$(python3 -c "import json; print(json.dumps({'name': '$CHANNEL'}))")")
+CHANNEL_ID=$(echo "$CHANNEL_RESULT" | python3 -c "import json,sys; print(json.loads(sys.stdin.read())['id'])")
 
-channel, content, path = sys.argv[1], sys.argv[2], sys.argv[3]
-payload = {"channel": channel, "content": content}
-pathlib.Path(path).write_text(json.dumps(payload, ensure_ascii=True), encoding="utf-8")
-PY
+if [[ -z "$CHANNEL_ID" ]]; then
+  echo "Channel '$CHANNEL' not found" >&2
+  exit 1
+fi
 
-curl -sS -X POST "http://localhost:3200/send" \
-  -H "Content-Type: application/json" \
-  -d @"$PAYLOAD_FILE"
+# Build payload with proper escaping
+PAYLOAD=$(python3 -c "import json,sys; print(json.dumps({'channelId': sys.argv[1], 'authorId': sys.argv[2], 'content': sys.argv[3]}))" "$CHANNEL_ID" "$AGENT_ID" "$CONTENT")
+
+$RPC_CMD channels.sendMessage "$PAYLOAD"

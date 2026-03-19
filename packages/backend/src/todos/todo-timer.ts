@@ -1,6 +1,6 @@
 import * as todoStore from '../storage/todo-store.js'
 import { sendMessage } from '../agents/agent-manager.js'
-import { broadcastAll } from '../websocket/ws-server.js'
+import { sendToAll as broadcastAll } from '../gateway/broadcast.js'
 import { MAX_SINGLE_TIMER_MS, isValidDueAtMs } from './due-at.js'
 
 type Notifier = (agentId: string, content: string) => Promise<void>
