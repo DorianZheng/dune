@@ -7,7 +7,7 @@ import type {
   HostOperatorRequest,
   MiniApp,
 } from '@dune/shared'
-import type { WsClient } from '../services/ws-client.js'
+import type { WsClient } from '../services/rpc.js'
 
 export type MiniappWindowState = {
   open: boolean

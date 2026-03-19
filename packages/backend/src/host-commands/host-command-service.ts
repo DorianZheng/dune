@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { isAbsolute, relative, resolve } from 'node:path'
 import { statSync } from 'node:fs'
-import { broadcastAll } from '../websocket/ws-server.js'
+import { sendToAll as broadcastAll } from '../gateway/broadcast.js'
 import * as hostCommandStore from '../storage/host-command-store.js'
 import type {
   HostCommandDecisionType,

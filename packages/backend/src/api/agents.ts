@@ -11,7 +11,7 @@ import * as agentManager from '../agents/agent-manager.js'
 import * as mailboxService from '../mailbox/mailbox-service.js'
 import * as hostOperatorService from '../host-operator/host-operator-service.js'
 import { config } from '../config.js'
-import { broadcastAll, broadcastToChannel } from '../websocket/ws-server.js'
+import { sendToAll as broadcastAll, sendToChannel as broadcastToChannel } from '../gateway/broadcast.js'
 import * as sandboxManager from '../sandboxes/sandbox-manager.js'
 import { parseMentions } from '../utils/mentions.js'
 import type {

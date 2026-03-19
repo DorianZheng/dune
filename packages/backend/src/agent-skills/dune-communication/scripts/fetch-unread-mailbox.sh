@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-curl -sS -X POST "http://localhost:3200/mailbox/fetch"
+RPC_CMD="${RPC_CMD:-python3 $DUNE_RPC_SCRIPT}"
+
+$RPC_CMD agents.fetchMailbox "{\"id\":\"$AGENT_ID\"}"
 echo

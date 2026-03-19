@@ -397,8 +397,76 @@ func specialKeyCode(_ key: String) -> CGKeyCode? {
     case "down": return 125
     case "up": return 126
     case "delete", "backspace": return 51
+    case "forwarddelete", "forward_delete": return 117
+    case "home": return 115
+    case "end": return 119
+    case "pageup", "page_up": return 116
+    case "pagedown", "page_down": return 121
+    case "f1": return 122
+    case "f2": return 120
+    case "f3": return 99
+    case "f4": return 118
+    case "f5": return 96
+    case "f6": return 97
+    case "f7": return 98
+    case "f8": return 100
+    case "f9": return 101
+    case "f10": return 109
+    case "f11": return 103
+    case "f12": return 111
     default: return nil
     }
+}
+
+func characterToKeyCode(_ char: String) -> CGKeyCode {
+    switch char.lowercased() {
+    case "a": return 0;  case "b": return 11; case "c": return 8;  case "d": return 2
+    case "e": return 14; case "f": return 3;  case "g": return 5;  case "h": return 4
+    case "i": return 34; case "j": return 38; case "k": return 40; case "l": return 37
+    case "m": return 46; case "n": return 45; case "o": return 31; case "p": return 35
+    case "q": return 12; case "r": return 15; case "s": return 1;  case "t": return 17
+    case "u": return 32; case "v": return 9;  case "w": return 13; case "x": return 7
+    case "y": return 16; case "z": return 6
+    case "0": return 29; case "1": return 18; case "2": return 19; case "3": return 20
+    case "4": return 21; case "5": return 23; case "6": return 22; case "7": return 26
+    case "8": return 28; case "9": return 25
+    case "-": return 27; case "=": return 24; case "[": return 33; case "]": return 30
+    case "\\": return 42; case ";": return 41; case "'": return 39; case ",": return 43
+    case ".": return 47; case "/": return 44; case "`": return 50
+    default: return 0
+    }
+}
+
+func postKeyWithModifiers(_ keyString: String) throws {
+    let parts = keyString.split(separator: "+").map { String($0).trimmingCharacters(in: .whitespaces).lowercased() }
+    guard parts.count >= 2, let keyName = parts.last else {
+        throw HelperError.message("invalid_key_combo: \(keyString)")
+    }
+    let modifierNames = Set(parts.dropLast())
+
+    var flags: CGEventFlags = []
+    if modifierNames.contains("cmd") || modifierNames.contains("command") { flags.insert(.maskCommand) }
+    if modifierNames.contains("shift") { flags.insert(.maskShift) }
+    if modifierNames.contains("alt") || modifierNames.contains("option") { flags.insert(.maskAlternate) }
+    if modifierNames.contains("ctrl") || modifierNames.contains("control") { flags.insert(.maskControl) }
+
+    let keyCode: CGKeyCode
+    if let special = specialKeyCode(keyName) {
+        keyCode = special
+    } else if keyName.count == 1 {
+        keyCode = characterToKeyCode(keyName)
+    } else {
+        throw HelperError.message("unknown_key: \(keyName)")
+    }
+
+    guard let down = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: true),
+          let up = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: false) else {
+        throw HelperError.message("keyboard_event_failed")
+    }
+    down.flags = flags
+    up.flags = flags
+    down.post(tap: .cghidEventTap)
+    up.post(tap: .cghidEventTap)
 }
 
 func act(_ input: [String: Any]) throws -> Any {
@@ -444,10 +512,14 @@ func act(_ input: [String: Any]) throws -> Any {
         return ["ok": true]
     case "press":
         let key = stringValue(input, "key") ?? ""
-        if let code = specialKeyCode(key) {
+        if key.contains("+") {
+            try postKeyWithModifiers(key)
+        } else if let code = specialKeyCode(key) {
             try postKeyCode(code)
-        } else {
+        } else if key.count == 1 {
             try postKeyboardText(key)
+        } else {
+            throw HelperError.message("unknown_key: \(key)")
         }
         return ["ok": true]
     case "click", "select":

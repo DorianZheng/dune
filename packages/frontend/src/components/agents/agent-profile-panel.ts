@@ -1,7 +1,7 @@
 import { LitElement, html, css, nothing } from 'lit'
 import { customElement, property, query as queryEl, state as litState } from 'lit/decorators.js'
 import type { Agent, Channel, AgentLogEntry } from '@dune/shared'
-import * as api from '../../services/api-client.js'
+import * as api from '../../services/rpc.js'
 import { uiPreferences } from '../../state/ui-preferences.js'
 import './agent-todo-panel.js'
 import './agent-log-viewer.js'

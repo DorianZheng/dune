@@ -5,7 +5,8 @@ import * as agentLogStore from '../storage/agent-log-store.js'
 import * as agentRuntimeStore from '../storage/agent-runtime-store.js'
 import * as agentRuntimeMountStore from '../storage/agent-runtime-mount-store.js'
 import * as sandboxStore from '../storage/sandbox-store.js'
-import { broadcastAll } from '../websocket/ws-server.js'
+import { sendToAll as broadcastAll } from '../gateway/broadcast.js'
+import { clearGrantsForAgent } from '../host-operator/host-operator-service.js'
 import { config } from '../config.js'
 import { createBoxliteRuntime } from '../boxlite/runtime.js'
 import { resolve, dirname, join } from 'node:path'
@@ -65,10 +66,8 @@ const AGENT_DUNE_CLAUDE_PATH = `${AGENT_DUNE_VOLUME_PATH}/.claude`
 const AGENT_DUNE_CLAUDE_STATE_PATH = `${AGENT_DUNE_VOLUME_PATH}/.claude.json`
 const AGENT_DUNE_SYSTEM_PATH = `${AGENT_DUNE_VOLUME_PATH}/system`
 const AGENT_DUNE_COMMUNICATION_PATH = `${AGENT_DUNE_SYSTEM_PATH}/communication`
-const DUNE_PROXY_GUEST_PATH = `${AGENT_DUNE_COMMUNICATION_PATH}/dune_proxy.py`
-const MAILBOX_DAEMON_GUEST_PATH = `${AGENT_DUNE_COMMUNICATION_PATH}/mailbox_daemon.py`
-const BACKEND_URL_RESOLVER_GUEST_PATH = `${AGENT_DUNE_COMMUNICATION_PATH}/backend_url_resolver.py`
-const BACKEND_ENDPOINTS_CONFIG_GUEST_PATH = `${AGENT_DUNE_COMMUNICATION_PATH}/backend-endpoints.json`
+const RPC_GUEST_PATH = `${AGENT_DUNE_VOLUME_PATH}/rpc.py`
+const LISTENER_GUEST_PATH = `${AGENT_DUNE_VOLUME_PATH}/listener.py`
 const AGENT_MEMORY_VOLUME_PATH = '/config/memory'
 const AGENT_MINIAPP_VOLUME_PATH = '/config/miniapps'
 const AGENT_CLAUDE_VOLUME_PATH = '/config/.claude'
@@ -77,8 +76,7 @@ const STOP_AGENT_SHUTDOWN_PROMPT = 'You are being shut down. Save any important 
 const TODO_HANDOFF_MEMORY_PATH = `${AGENT_MEMORY_VOLUME_PATH}/todo-handoff.md`
 const LEADER_THESIS_MEMORY_PATH = `${AGENT_MEMORY_VOLUME_PATH}/leader-thesis.md`
 const TODO_HEARTBEAT_DELAY_MINUTES = 30
-const DUNE_PROXY_PROCESS_PATTERN = '[d]une_proxy.py'
-const MAILBOX_DAEMON_PROCESS_PATTERN = '[m]ailbox_daemon.py'
+const LISTENER_PROCESS_PATTERN = '[l]istener.py'
 const COMMUNICATION_DAEMON_REFRESH_INTERVAL_MS = 60_000
 const MCP_CONFIG = JSON.stringify({
   mcpServers: {
@@ -106,6 +104,7 @@ const COORDINATION_AGENT_SKILLS = [
   'dune-team-manager',
   'dune-todo',
   'dune-host-operator',
+  'dune-slack',
 ] as const
 const FOLLOWER_AGENT_SKILLS = [
   ...COORDINATION_AGENT_SKILLS,
@@ -371,9 +370,8 @@ interface RunningAgent {
   guiHttpPort: number
   guiHttpsPort: number
   backendUrl: string
-  backendCandidates?: string[]
+  agentHttpUrl: string
   daemonAssetHash?: string
-  daemonConfigHash?: string
   cliInstalled: boolean
   hasSession: boolean
   startedAt: number
@@ -639,7 +637,12 @@ async function ensureCliInstalled(box: SimpleBox): Promise<void> {
 function getBackendPort(): number {
   try {
     const portFile = join(__dirname, '../../.port')
-    return parseInt(readFileSync(portFile, 'utf-8').trim(), 10)
+    const raw = readFileSync(portFile, 'utf-8').trim()
+    if (raw.startsWith('{')) {
+      const parsed = JSON.parse(raw)
+      return parsed.agentPort || 0
+    }
+    return parseInt(raw, 10)
   } catch {
     return 0
   }
@@ -666,85 +669,6 @@ function getHostLanIps(): string[] {
     }
   }
   return dedupeStrings(addresses)
-}
-
-async function getContainerDefaultGateway(box: SimpleBox): Promise<string> {
-  return retriedExec(box, 'bash', ['-c', "ip route | awk '/default/ {print $3}'"], { DISPLAY: ':1' }, 10_000)
-    .then(r => r.stdout.trim())
-    .catch(() => '')
-}
-
-function buildBackendUrlCandidates(
-  backendPort: number,
-  options: { previousUrl?: string | null; defaultGateway?: string | null; hostIps?: string[] | null } = {},
-): string[] {
-  const previousUrl = options.previousUrl?.trim() || ''
-  const gatewayUrl = options.defaultGateway?.trim()
-    ? `http://${options.defaultGateway.trim()}:${backendPort}`
-    : ''
-  const hostIps = options.hostIps?.length
-    ? dedupeStrings(options.hostIps)
-    : getHostLanIps()
-
-  return dedupeStrings([
-    previousUrl,
-    `http://host.docker.internal:${backendPort}`,
-    gatewayUrl,
-    ...hostIps.map(ip => `http://${ip}:${backendPort}`),
-  ])
-}
-
-async function probeBackendUrl(box: SimpleBox, backendUrl: string): Promise<boolean> {
-  const check = await retriedExec(box, 'bash', ['-c',
-    `curl -s --max-time 3 -o /dev/null -w '%{http_code}' ${backendUrl}/api/agents 2>/dev/null`
-  ], { DISPLAY: ':1' }, 10_000)
-  return check.stdout.trim() === '200'
-}
-
-async function resolveBackendEndpointConfig(
-  box: SimpleBox,
-  backendPort: number,
-  options: { previousUrl?: string | null } = {},
-): Promise<BackendEndpointConfig> {
-  const defaultGateway = await getContainerDefaultGateway(box)
-  const urls = buildBackendUrlCandidates(backendPort, {
-    previousUrl: options.previousUrl,
-    defaultGateway,
-  })
-
-  let preferredUrl: string | null = null
-  for (const candidate of urls) {
-    if (await probeBackendUrl(box, candidate)) {
-      preferredUrl = candidate
-      break
-    }
-  }
-
-  return {
-    preferredUrl,
-    urls,
-    updatedAt: Date.now(),
-  }
-}
-
-/** Detect the host URL reachable from inside the container.
- *  Tests a real API route to avoid false positives from addresses that accept TCP
- *  or /health but do not actually serve agent traffic. */
-async function detectHostUrl(
-  box: SimpleBox,
-  backendPort: number,
-  options: { previousUrl?: string | null } = {},
-): Promise<string> {
-  const config = await resolveBackendEndpointConfig(box, backendPort, options)
-  if (config.preferredUrl) return config.preferredUrl
-  throw new Error('Cannot detect host URL from container')
-}
-
-export function __buildBackendUrlCandidatesForTests(
-  backendPort: number,
-  options: { previousUrl?: string | null; defaultGateway?: string | null; hostIps?: string[] | null } = {},
-): string[] {
-  return buildBackendUrlCandidates(backendPort, options)
 }
 
 /** Read a Python file from the agent-mcp directory. */
@@ -922,101 +846,38 @@ function ensureAgentRuntimeHostPaths(agentId: string): AgentRuntimeHostPaths {
 
 type CommunicationDaemonAssetSyncResult = {
   rootHostPath: string
-  proxyHostPath: string
-  mailboxDaemonHostPath: string
-  backendUrlResolverHostPath: string
-  endpointConfigHostPath: string
   assetHash: string
   changed: boolean
 }
 
-type BackendEndpointConfig = {
-  preferredUrl: string | null
-  urls: string[]
-  updatedAt: number
-}
-
-type BackendEndpointConfigSyncResult = {
-  hostPath: string
-  hash: string
-  changed: boolean
-}
-
-function serializeBackendEndpointConfig(config: BackendEndpointConfig): string {
-  return `${JSON.stringify({
-    preferredUrl: config.preferredUrl,
-    urls: config.urls,
-    updatedAt: config.updatedAt,
-  }, null, 2)}\n`
-}
-
-function syncBackendEndpointConfig(agentId: string, config: BackendEndpointConfig): BackendEndpointConfigSyncResult {
-  const runtimeHostPaths = ensureAgentRuntimeHostPaths(agentId)
-  const hostPath = join(runtimeHostPaths.communicationHostPath, 'backend-endpoints.json')
-  const content = serializeBackendEndpointConfig(config)
-  const existingContent = existsSync(hostPath)
-    ? readFileSync(hostPath, 'utf-8')
-    : null
-  const changed = existingContent !== content
-
-  if (changed) {
-    writeFileSync(hostPath, content, 'utf-8')
-  }
-
-  const hash = createHash('sha256')
-    .update(config.preferredUrl || '')
-    .update('\0')
-    .update(config.urls.join('\n'))
-    .digest('hex')
-
-  return { hostPath, hash, changed }
-}
-
 function syncCommunicationDaemonAssets(agentId: string): CommunicationDaemonAssetSyncResult {
   const runtimeHostPaths = ensureAgentRuntimeHostPaths(agentId)
-  const rootHostPath = runtimeHostPaths.communicationHostPath
-  const proxyHostPath = join(rootHostPath, 'dune_proxy.py')
-  const mailboxDaemonHostPath = join(rootHostPath, 'mailbox_daemon.py')
-  const backendUrlResolverHostPath = join(rootHostPath, 'backend_url_resolver.py')
-  const endpointConfigHostPath = join(rootHostPath, 'backend-endpoints.json')
-  const proxyCode = readAgentMcpFile('dune_proxy.py')
-  const mailboxDaemonCode = readAgentMcpFile('mailbox_daemon.py')
-  const backendUrlResolverCode = readAgentMcpFile('backend_url_resolver.py')
+  const rootHostPath = runtimeHostPaths.duneRootHostPath
+  const rpcCode = readAgentMcpFile('rpc.py')
+  const listenerCode = readAgentMcpFile('listener.py')
   const assets = [
-    { hostPath: proxyHostPath, content: proxyCode },
-    { hostPath: mailboxDaemonHostPath, content: mailboxDaemonCode },
-    { hostPath: backendUrlResolverHostPath, content: backendUrlResolverCode },
+    { hostPath: join(rootHostPath, 'rpc.py'), content: rpcCode },
+    { hostPath: join(rootHostPath, 'listener.py'), content: listenerCode },
   ]
 
   mkdirSync(rootHostPath, { recursive: true })
 
+  // Clean up legacy daemon files from old path (system/communication/)
+  const legacyCommunicationPath = join(rootHostPath, 'system', 'communication')
+  if (existsSync(legacyCommunicationPath)) {
+    rmSync(legacyCommunicationPath, { recursive: true, force: true })
+  }
+
   let changed = false
   for (const asset of assets) {
-    const existingContent = existsSync(asset.hostPath)
-      ? readFileSync(asset.hostPath, 'utf-8')
-      : null
-    if (existingContent === asset.content) continue
+    const existing = existsSync(asset.hostPath) ? readFileSync(asset.hostPath, 'utf-8') : null
+    if (existing === asset.content) continue
     writeFileSync(asset.hostPath, asset.content, 'utf-8')
     changed = true
   }
 
-  const assetHash = createHash('sha256')
-    .update(proxyCode)
-    .update('\0')
-    .update(mailboxDaemonCode)
-    .update('\0')
-    .update(backendUrlResolverCode)
-    .digest('hex')
-
-  return {
-    rootHostPath,
-    proxyHostPath,
-    mailboxDaemonHostPath,
-    backendUrlResolverHostPath,
-    endpointConfigHostPath,
-    assetHash,
-    changed,
-  }
+  const assetHash = createHash('sha256').update(rpcCode).update('\0').update(listenerCode).digest('hex')
+  return { rootHostPath, assetHash, changed }
 }
 
 export function __syncCommunicationDaemonAssetsForTests(agentId: string): CommunicationDaemonAssetSyncResult {
@@ -1501,82 +1362,51 @@ function buildEnvAssignments(values: Record<string, string | undefined>): string
     .join(' ')
 }
 
-function getPreferredBackendUrl(config: BackendEndpointConfig): string {
-  return config.preferredUrl || config.urls[0] || ''
-}
-
 async function startCommunicationDaemons(
   box: SimpleBox,
   agentId: string,
-  agentName: string,
-  endpointConfig: BackendEndpointConfig,
+  wsUrl: string,
 ): Promise<void> {
-  const backendUrl = getPreferredBackendUrl(endpointConfig)
-  if (!backendUrl) {
-    throw new Error(`No backend URL candidates available for agent ${agentId}`)
-  }
-
-  const proxyEnv = buildEnvAssignments({
-    DUNE_API_URL: backendUrl,
-    DUNE_API_ENDPOINTS_FILE: BACKEND_ENDPOINTS_CONFIG_GUEST_PATH,
-    DUNE_AGENT_ID: agentId,
-    DUNE_AGENT_NAME: agentName,
+  const listenerEnv = buildEnvAssignments({
+    DUNE_WS_URL: wsUrl,
+    AGENT_ID: agentId,
+    DUNE_RPC_SCRIPT: RPC_GUEST_PATH,
   })
   await retriedExec(
     box,
     'bash',
-    ['-c', `nohup runuser -u abc -- env ${proxyEnv} python3 ${DUNE_PROXY_GUEST_PATH} > /tmp/proxy.log 2>&1 &`],
+    ['-c', `nohup runuser -u abc -- env ${listenerEnv} python3 ${LISTENER_GUEST_PATH} > /tmp/listener.log 2>&1 &`],
     { DISPLAY: ':1' },
   )
-  console.log(`Dune proxy started for agent ${agentId}`)
-
-  const daemonEnv = buildEnvAssignments({
-    DUNE_API_URL: backendUrl,
-    DUNE_API_ENDPOINTS_FILE: BACKEND_ENDPOINTS_CONFIG_GUEST_PATH,
-    DUNE_AGENT_ID: agentId,
-  })
-  await retriedExec(
-    box,
-    'bash',
-    ['-c', `nohup runuser -u abc -- env ${daemonEnv} python3 ${MAILBOX_DAEMON_GUEST_PATH} > /tmp/mailbox.log 2>&1 &`],
-    { DISPLAY: ':1' },
-  )
-  console.log(`Mailbox daemon started for agent ${agentId}`)
+  console.log(`Listener started for agent ${agentId}`)
 }
 
 async function stopCommunicationDaemons(box: SimpleBox): Promise<void> {
   await timedExec(
     box,
     'bash',
-    ['-c', `pkill -f "${DUNE_PROXY_PROCESS_PATTERN}" 2>/dev/null; pkill -f "${MAILBOX_DAEMON_PROCESS_PATTERN}" 2>/dev/null; true`],
+    ['-c', `pkill -f "${LISTENER_PROCESS_PATTERN}" 2>/dev/null; true`],
     { DISPLAY: ':1' },
     10_000,
   )
 }
 
 type CommunicationDaemonProcessStatus = {
-  proxyRunning: boolean
-  mailboxRunning: boolean
+  listenerRunning: boolean
 }
 
 async function getCommunicationDaemonProcessStatus(box: SimpleBox): Promise<CommunicationDaemonProcessStatus> {
   const result = await retriedExec(
     box,
     'bash',
-    ['-lc',
-      `proxy=0; mailbox=0; pgrep -f "${DUNE_PROXY_PROCESS_PATTERN}" >/dev/null && proxy=1; pgrep -f "${MAILBOX_DAEMON_PROCESS_PATTERN}" >/dev/null && mailbox=1; printf 'proxy=%s\\nmailbox=%s\\n' "$proxy" "$mailbox"`
-    ],
+    ['-lc', `listener=0; pgrep -f "${LISTENER_PROCESS_PATTERN}" >/dev/null && listener=1; printf 'listener=%s\\n' "$listener"`],
     { DISPLAY: ':1' },
   )
-
-  return {
-    proxyRunning: /proxy=1/.test(result.stdout),
-    mailboxRunning: /mailbox=1/.test(result.stdout),
-  }
+  return { listenerRunning: /listener=1/.test(result.stdout) }
 }
 
 type ReconcileCommunicationDaemonsOptions = {
-  endpointConfig: BackendEndpointConfig
+  wsUrl: string
   daemonAssetHash: string
   force?: boolean
 }
@@ -1585,9 +1415,7 @@ async function reconcileCommunicationDaemons(
   running: RunningAgent,
   options: ReconcileCommunicationDaemonsOptions,
 ): Promise<boolean> {
-  const { endpointConfig, daemonAssetHash, force = false } = options
-  const configSync = syncBackendEndpointConfig(running.agent.id, endpointConfig)
-  const backendUrl = getPreferredBackendUrl(endpointConfig)
+  const { wsUrl, daemonAssetHash, force = false } = options
   let shouldRestart = force
 
   if (!shouldRestart) {
@@ -1596,24 +1424,18 @@ async function reconcileCommunicationDaemons(
 
   if (!shouldRestart) {
     const processStatus = await getCommunicationDaemonProcessStatus(running.box)
-    shouldRestart = !processStatus.proxyRunning || !processStatus.mailboxRunning
+    shouldRestart = !processStatus.listenerRunning
   }
 
-  running.backendUrl = backendUrl
-  running.backendCandidates = [...endpointConfig.urls]
+  running.backendUrl = wsUrl
   running.daemonAssetHash = daemonAssetHash
-  running.daemonConfigHash = configSync.hash
 
   if (!shouldRestart) {
     return false
   }
 
-  if (!backendUrl) {
-    throw new Error(`No backend URL candidates available for agent ${running.agent.id}`)
-  }
-
   await stopCommunicationDaemons(running.box)
-  await startCommunicationDaemons(running.box, running.agent.id, running.agent.name, endpointConfig)
+  await startCommunicationDaemons(running.box, running.agent.id, wsUrl)
   return true
 }
 
@@ -1792,8 +1614,7 @@ export async function startAgent(agentId: string): Promise<void> {
   Object.assign(env, buildClaudeCliAuthEnvValues())
 
   let backendUrl = ''
-  let backendCandidates: string[] = []
-  let daemonConfigHash: string | undefined
+  let agentHttpUrl = ''
   let sandboxId = runtimeState.sandboxId
   let box: SimpleBox | null = null
   try {
@@ -1921,29 +1742,26 @@ export async function startAgent(agentId: string): Promise<void> {
     )
 
     checkAborted(signal, agentId)
-    emitStartupLog(agentId, 'Deploying communication daemons...')
+    emitStartupLog(agentId, 'Deploying communication listener...')
 
-    // ── Start Dune proxy + mailbox daemon from persistent .dune assets ──────
+    // ── Start listener daemon via WS ──────
     const backendPort = getBackendPort()
     if (backendPort > 0) {
+      // Resolve host IP reachable from inside container
+      const hostIps = getHostLanIps()
+      const hostAddr = hostIps[0] || '127.0.0.1'
+      agentHttpUrl = `http://${hostAddr}:${backendPort}`
+      const wsUrl = `ws://${hostAddr}:${backendPort}/ws/agent?agentId=${agentId}`
+      backendUrl = wsUrl
+      console.log(`Backend host for agent ${agentId}: ${hostAddr} (candidates: ${hostIps.join(', ')})`)
       try {
-        const endpointConfig = await resolveBackendEndpointConfig(box, backendPort)
-        const configSync = syncBackendEndpointConfig(agentId, endpointConfig)
-        backendUrl = getPreferredBackendUrl(endpointConfig)
-        backendCandidates = [...endpointConfig.urls]
-        daemonConfigHash = configSync.hash
-        console.log(`Backend URL for agent ${agentId}: ${backendUrl || '(none)'} (${endpointConfig.urls.length} candidates)`)
-
-        if (backendUrl) {
-          await startCommunicationDaemons(box, agentId, agent.name, endpointConfig)
-        } else {
-          console.warn(`No backend URL candidates resolved for agent ${agentId} — proxy/daemon not deployed`)
-        }
+        await startCommunicationDaemons(box, agentId, wsUrl)
+        console.log(`Listener started for agent ${agentId}: ${wsUrl}`)
       } catch (err: any) {
-        console.warn(`Failed to detect host URL for agent ${agentId}: ${err.message} — proxy/daemon not deployed`)
+        console.warn(`Failed to start listener for agent ${agentId}: ${err.message}`)
       }
-    } else if (backendPort <= 0) {
-      console.warn(`Backend port not detected — proxy/daemon not deployed for agent ${agentId}`)
+    } else {
+      console.warn(`Backend port not detected — listener not deployed for agent ${agentId}`)
     }
 
     if (isPendingSandboxId(sandboxId)) {
@@ -1974,9 +1792,8 @@ export async function startAgent(agentId: string): Promise<void> {
       guiHttpPort,
       guiHttpsPort,
       backendUrl,
-      backendCandidates,
+      agentHttpUrl,
       daemonAssetHash: daemonAssets.assetHash,
-      daemonConfigHash,
       cliInstalled: true,
       hasSession: runtimeState.hasSession,
       startedAt,
@@ -2060,6 +1877,7 @@ export async function stopAgent(agentId: string): Promise<void> {
       console.error(`Failed to stop box for agent ${agentId}:`, err.message)
     }
     runningAgents.delete(agentId)
+    clearGrantsForAgent(agentId)
   }
   const stoppedAt = Date.now()
   agentRuntimeStore.touchAgentRuntimeStopped(agentId, stoppedAt)
@@ -2085,13 +1903,17 @@ export async function interruptAgentWorkflow(agentId: string): Promise<boolean> 
 
   // Safety net: if the abort signal + kill didn't finalize within 3s, force-reset
   setTimeout(() => {
+    const current = runningAgents.get(agentId)
+    if (!current || !current.interruptRequested) return
     const agent = agentStore.getAgent(agentId)
     if (!agent || (agent.status !== 'thinking' && agent.status !== 'responding')) return
     console.warn(`[${agentId}] Interrupt safety timeout — force-resetting to idle`)
-    running.thinkingSince = 0
-    running.currentExecution = null
-    running.interruptRequested = false
-    running.interruptAbort = null
+    current.thinkingSince = 0
+    current.currentExecution = null
+    current.interruptRequested = false
+    current.interruptAbort = null
+    // Release the agent lock so new messages can be sent
+    agentLocks.delete(agentId)
     setAgentStatus(agentId, 'idle', { source: 'interrupt-timeout', reason: 'interrupt did not finalize within 3s' })
     emitAgentLogEntries(agentId, [{
       id: newEventId(),
@@ -2576,6 +2398,8 @@ function queueTodoReminderIfNeeded(
   options: { now?: number; requireUnlocked?: boolean } = {},
 ): boolean {
   if (options.requireUnlocked && agentLocks.has(agentId)) return false
+  const agentStatus = agentStore.getAgent(agentId)?.status
+  if (agentStatus === 'stopping' || agentStatus === 'stopped') return false
   const now = options.now ?? Date.now()
   const payload = buildTodoReminderPayload(agentId, now)
   if (!payload) return false
@@ -2615,6 +2439,8 @@ type BuildClaudeCliCommandInput = {
   hasSession: boolean
   oauthToken: string
   modelId: string | null
+  agentHttpUrl: string
+  wsUrl: string
 }
 
 function buildClaudeCliCommand(input: BuildClaudeCliCommandInput): string {
@@ -2630,6 +2456,9 @@ function buildClaudeCliCommand(input: BuildClaudeCliCommandInput): string {
     `IS_SANDBOX=1`,
     `AGENT_ID=${input.agentId}`,
     `DUNE_AGENT_ID=${input.agentId}`,
+    ...(input.agentHttpUrl ? [`DUNE_AGENT_URL=${input.agentHttpUrl}`] : []),
+    ...(input.wsUrl ? [`DUNE_WS_URL=${input.wsUrl}`] : []),
+    `DUNE_RPC_SCRIPT=${RPC_GUEST_PATH}`,
     ...(oauthToken ? [`CLAUDE_CODE_OAUTH_TOKEN=${oauthToken}`] : []),
     `claude --print`,
     ...(modelId ? [`--model ${modelId}`] : []),
@@ -2873,6 +2702,8 @@ async function _sendMessageInner(
       hasSession: running.hasSession,
       oauthToken,
       modelId,
+      agentHttpUrl: running.agentHttpUrl,
+      wsUrl: running.backendUrl,
     })
 
     console.log(`[${agentId}] Starting claude -p (prompt length: ${fullPrompt.length})...`)
@@ -3325,26 +3156,20 @@ export async function reconcileAllRunningCommunicationDaemons(): Promise<void> {
   for (const [agentId, running] of runningAgents) {
     try {
       const daemonAssets = syncCommunicationDaemonAssets(agentId)
-      const endpointConfig = await resolveBackendEndpointConfig(running.box, backendPort, {
-        previousUrl: running.backendUrl,
-      })
-      const backendUrl = getPreferredBackendUrl(endpointConfig)
-      console.log(`Re-detected backend URL for ${running.agent.name}: ${backendUrl || '(none)'} (${endpointConfig.urls.length} candidates)`)
+      const hostAddr = getHostLanIps()[0] || '127.0.0.1'
+      const wsUrl = `ws://${hostAddr}:${backendPort}/ws/agent?agentId=${agentId}`
       const restarted = await reconcileCommunicationDaemons(running, {
-        endpointConfig,
+        wsUrl,
         daemonAssetHash: daemonAssets.assetHash,
         force: false,
       })
-
-      console.log(`${restarted ? 'Reconciled' : 'Skipped'} daemons for ${running.agent.name}`)
+      console.log(`${restarted ? 'Reconciled' : 'Skipped'} listener for ${running.agent.name}`)
     } catch (err: any) {
-      console.error(`Failed to reconcile daemons for agent ${agentId}:`, err.message)
+      console.error(`Failed to reconcile listener for agent ${agentId}:`, err.message)
     }
   }
 }
 
-/** Force-redeploy proxy/daemon for all running agents.
- *  Keeps the admin route behavior even when assets and backend URL are unchanged. */
 export async function redeployAllDaemons(): Promise<void> {
   const backendPort = getBackendPort()
   if (backendPort <= 0) return
@@ -3359,21 +3184,16 @@ export async function redeployAllDaemons(): Promise<void> {
       await upsertClaudeSettingsInBox(running.box, agentId)
 
       const daemonAssets = syncCommunicationDaemonAssets(agentId)
-      const endpointConfig = await resolveBackendEndpointConfig(running.box, backendPort, {
-        previousUrl: running.backendUrl,
-      })
-      const backendUrl = getPreferredBackendUrl(endpointConfig)
-      console.log(`Re-detected backend URL for ${running.agent.name}: ${backendUrl || '(none)'} (${endpointConfig.urls.length} candidates)`)
-
+      const hostAddr = getHostLanIps()[0] || '127.0.0.1'
+      const wsUrl = `ws://${hostAddr}:${backendPort}/ws/agent?agentId=${agentId}`
       await reconcileCommunicationDaemons(running, {
-        endpointConfig,
+        wsUrl,
         daemonAssetHash: daemonAssets.assetHash,
         force: true,
       })
-
-      console.log(`Redeployed daemons for ${running.agent.name}`)
+      console.log(`Redeployed listener for ${running.agent.name}`)
     } catch (err: any) {
-      console.error(`Failed to redeploy daemons for agent ${agentId}:`, err.message)
+      console.error(`Failed to redeploy listener for agent ${agentId}:`, err.message)
     }
   }
 }

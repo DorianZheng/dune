@@ -151,6 +151,7 @@ export const HostOperatorRequestSchema = Type.Object({
 
 export const HostOperatorDecisionRequestSchema = Type.Object({
   decision: HostOperatorDecision,
+  grantTtlMs: Type.Optional(Type.Number()),
 })
 
 export const HostOperatorPendingListResponseSchema = Type.Object({

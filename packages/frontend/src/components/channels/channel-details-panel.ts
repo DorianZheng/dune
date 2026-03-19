@@ -1,7 +1,7 @@
 import { LitElement, html, css } from 'lit'
 import { customElement, property, state as litState } from 'lit/decorators.js'
 import type { Channel, Agent } from '@dune/shared'
-import * as api from '../../services/api-client.js'
+import * as api from '../../services/rpc.js'
 import { uiPreferences } from '../../state/ui-preferences.js'
 
 const DEFAULT_INSPECTOR_WIDTH_PX = 520

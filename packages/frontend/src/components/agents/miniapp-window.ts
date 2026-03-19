@@ -3,7 +3,7 @@ import { customElement, property, query, state as litState } from 'lit/decorator
 import type { AgentStatusType } from '@dune/shared'
 import { nanoid } from 'nanoid'
 const newRequestId = () => nanoid(12)
-import * as api from '../../services/api-client.js'
+import * as api from '../../services/rpc.js'
 
 type MiniappActionResult = {
   ok: boolean

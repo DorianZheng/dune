@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { config } from '../config.js'
-import { broadcastAll } from '../websocket/ws-server.js'
+import { sendToAll as broadcastAll } from '../gateway/broadcast.js'
 import * as hostOperatorStore from '../storage/host-operator-store.js'
 import {
   createDefaultHostOperatorProvider,
@@ -28,48 +28,31 @@ import type {
 const requestEvents = new EventEmitter()
 const HOST_OPERATOR_GUEST_ARTIFACT_ROOT = '/config/.dune/system/host-operator'
 
-/** Grants: auto-approve subsequent requests for the same agent + target within a time window. */
-const GRANT_TTL_MS = 30 * 60 * 1000 // 30 minutes
-interface Grant { expiresAt: number }
-/** Key format: `${agentId}:app:${bundleId}` or `${agentId}:path:${root}` */
-const grants = new Map<string, Grant>()
+import * as hostGrantStore from '../storage/host-grant-store.js'
 
-function grantKey(agentId: string, kind: 'app' | 'path', target: string): string {
-  return `${agentId}:${kind}:${target}`
-}
+const DEFAULT_GRANT_TTL_MS = 30 * 60 * 1000 // 30 minutes
 
-function recordGrant(agentId: string, kind: 'app' | 'path', target: string): void {
-  grants.set(grantKey(agentId, kind, target), { expiresAt: Date.now() + GRANT_TTL_MS })
-}
-
-function hasActiveGrant(agentId: string, kind: 'app' | 'path', target: string): boolean {
-  const key = grantKey(agentId, kind, target)
-  const grant = grants.get(key)
-  if (!grant) return false
-  if (Date.now() > grant.expiresAt) { grants.delete(key); return false }
-  return true
-}
-
-function recordGrantsFromRequest(agentId: string, request: HostOperatorRequest): void {
+function recordGrantsFromRequest(agentId: string, request: HostOperatorRequest, ttlMs = DEFAULT_GRANT_TTL_MS): void {
   const target = request.target as HostOperatorTarget | null
-  if (target?.bundleId) recordGrant(agentId, 'app', target.bundleId)
-  if (target?.path) {
-    // Grant the root directory, not the specific file
-    const root = target.path
-    recordGrant(agentId, 'path', root)
-  }
+  const expiresAt = ttlMs > 0 ? Date.now() + ttlMs : null
+  if (target?.bundleId) hostGrantStore.upsertGrant(agentId, 'app', target.bundleId, expiresAt)
+  if (target?.path) hostGrantStore.upsertGrant(agentId, 'path', target.path, expiresAt)
+}
+
+export function clearGrantsForAgent(agentId: string): void {
+  hostGrantStore.clearGrantsForAgent(agentId)
 }
 
 function hasGrantForRequest(agentId: string, input: HostOperatorCreateRequest): boolean {
   switch (input.kind) {
     case 'status': return true
-    case 'overview': return !input.bundleId || hasActiveGrant(agentId, 'app', input.bundleId.trim())
-    case 'perceive': return hasActiveGrant(agentId, 'app', (input.bundleId || '').trim())
+    case 'overview': return !input.bundleId || hostGrantStore.hasGrant(agentId, 'app', input.bundleId.trim())
+    case 'perceive': return hostGrantStore.hasGrant(agentId, 'app', (input.bundleId || '').trim())
     case 'act': {
       if (input.action === 'clipboard_read' || input.action === 'clipboard_write') return false
-      return hasActiveGrant(agentId, 'app', (input.bundleId || '').trim())
+      return hostGrantStore.hasGrant(agentId, 'app', (input.bundleId || '').trim())
     }
-    case 'filesystem': return false // always require approval for filesystem ops
+    case 'filesystem': return hostGrantStore.hasGrant(agentId, 'path', (input.path || '').trim())
     default: return false
   }
 }
@@ -210,11 +193,14 @@ function validateInput(agent: Pick<Agent, 'hostOperatorApps' | 'hostOperatorPath
       if (input.action === 'url' && (!input.url || !input.url.trim())) throw new Error('url_required')
       return input
     }
-    case 'filesystem':
+    case 'filesystem': {
+      const VALID_FS_OPS = new Set(['list', 'read', 'write', 'delete', 'search'])
+      if (!VALID_FS_OPS.has(input.op)) throw new Error(`invalid_filesystem_op: ${input.op}. Valid: ${[...VALID_FS_OPS].join(', ')}`)
       if (input.op === 'search' && (!input.query || !input.query.trim())) throw new Error('query_required')
       if (input.op === 'write' && typeof input.content !== 'string') throw new Error('content_required')
       ensureAllowedHostPath(input.path, agent, { allowMissingLeaf: input.op === 'write', enforceAllowlist: enforce })
       return input
+    }
     default:
       throw new Error('invalid_host_operator_request')
   }
@@ -374,9 +360,8 @@ export async function submitHostOperatorRequest(input: {
   request: HostOperatorCreateRequest
   approvalMode: HostOperatorApprovalModeType
 }): Promise<HostOperatorRequest> {
-  const enforceAllowlist = input.approvalMode === 'dangerously-skip'
-  const validated = validateInput(input.agent, input.request, { enforceAllowlist })
-  const metadata = buildRequestMetadata(input.agent, validated, { enforceAllowlist })
+  const validated = validateInput(input.agent, input.request, { enforceAllowlist: false })
+  const metadata = buildRequestMetadata(input.agent, validated, { enforceAllowlist: false })
   const created = hostOperatorStore.createHostOperatorRequest({
     agentId: input.agent.id,
     requestedByType: input.requestedByType,
@@ -466,6 +451,7 @@ export async function decideHostOperatorRequest(input: {
   requestId: string
   decision: HostOperatorDecisionType
   approverId: string
+  grantTtlMs?: number
   agentLookup: (agentId: string) => Agent | undefined
 }): Promise<HostOperatorRequest | null> {
   if (input.decision === 'reject') {
@@ -490,7 +476,7 @@ export async function decideHostOperatorRequest(input: {
   if (!running) return null
 
   notifyRequestUpdate(running)
-  recordGrantsFromRequest(running.agentId, running)
+  recordGrantsFromRequest(running.agentId, running, input.grantTtlMs)
   const agent = input.agentLookup(running.agentId)
   if (!agent) {
     return markRequestFailed(running, 'agent_not_found')

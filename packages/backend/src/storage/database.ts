@@ -1,14 +1,27 @@
 import Database from 'better-sqlite3'
 import { config } from '../config.js'
 import { mkdirSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { createRequire } from 'node:module'
+import { dirname, join } from 'node:path'
+
+const _require = createRequire(import.meta.url)
 
 let db: Database.Database
+
+function findNativeBinding(): string {
+  // Locate the .node binary relative to better-sqlite3's JS entry.
+  // This works in both dev (pnpm symlinks) and packaged app (flat node_modules).
+  const bs3Entry = _require.resolve('better-sqlite3')
+  const bs3Dir = dirname(dirname(bs3Entry)) // lib/database.js → lib → better-sqlite3
+  return join(bs3Dir, 'build', 'Release', 'better_sqlite3.node')
+}
 
 export function getDb(): Database.Database {
   if (!db) {
     mkdirSync(dirname(config.databasePath), { recursive: true })
-    db = new Database(config.databasePath)
+    // Pass nativeBinding to bypass the `bindings` → `file-uri-to-path` chain
+    // which is hard to resolve from pnpm's virtual store in packaged apps.
+    db = new Database(config.databasePath, { nativeBinding: findNativeBinding() })
     db.pragma('journal_mode = WAL')
     initSchema(db)
   }
@@ -369,6 +382,19 @@ function initSchema(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_todos_agent_status_due
       ON todos(agent_id, status, due_at);
 
+    CREATE TABLE IF NOT EXISTS agent_host_grants (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent_id TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('app', 'path')),
+      target TEXT NOT NULL,
+      expires_at INTEGER,
+      created_at INTEGER NOT NULL,
+      UNIQUE(agent_id, kind, target)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_host_grants_agent
+      ON agent_host_grants(agent_id);
+
     CREATE TABLE IF NOT EXISTS claude_settings (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       selected_model_provider TEXT,
@@ -379,6 +405,28 @@ function initSchema(db: Database.Database) {
       anthropic_base_url TEXT,
       claude_code_disable_nonessential_traffic TEXT,
       updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS slack_settings (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      bot_token TEXT,
+      app_token TEXT,
+      team_id TEXT,
+      team_name TEXT,
+      bot_user_id TEXT,
+      installed_at INTEGER,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS slack_channel_links (
+      id TEXT PRIMARY KEY,
+      dune_channel_id TEXT NOT NULL,
+      slack_channel_id TEXT NOT NULL,
+      slack_channel_name TEXT NOT NULL,
+      direction TEXT NOT NULL DEFAULT 'bidirectional',
+      created_at INTEGER NOT NULL,
+      FOREIGN KEY (dune_channel_id) REFERENCES channels(id) ON DELETE CASCADE,
+      UNIQUE (dune_channel_id, slack_channel_id)
     );
   `)
 
@@ -519,4 +567,5 @@ function initSchema(db: Database.Database) {
   } catch {
     // Column already exists — ignore
   }
+
 }

@@ -4,7 +4,7 @@ import * as messageStore from '../storage/message-store.js'
 import * as agentStore from '../storage/agent-store.js'
 import { onNewMessage } from '../agents/orchestrator.js'
 import { parseMentions } from '../utils/mentions.js'
-import { broadcastAll } from '../websocket/ws-server.js'
+import { sendToAll as broadcastAll } from '../gateway/broadcast.js'
 
 export const channelsApi = new Hono()
 

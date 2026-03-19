@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+RPC_CMD="${RPC_CMD:-python3 $DUNE_RPC_SCRIPT}"
+
 if [ "$#" -ne 1 ]; then
   echo "Usage: host-fs.sh '<json payload without kind>'" >&2
   exit 1
 fi
 
-python3 - "$1" <<'PY' | \
-  curl -sS -X POST "http://localhost:3200/host/v1/filesystem" \
-    -H 'Content-Type: application/json' \
-    --data-binary @- \
-  | python3 -m json.tool
-import json
-import sys
+PAYLOAD=$(python3 -c "
+import json,sys
+inner = json.loads(sys.argv[1])
+if not isinstance(inner, dict):
+    raise SystemExit('payload must be a JSON object')
+inner['id'] = sys.argv[2]
+inner['kind'] = 'filesystem'
+print(json.dumps(inner, ensure_ascii=True))
+" "$1" "$AGENT_ID")
 
-payload = json.loads(sys.argv[1])
-if not isinstance(payload, dict):
-  raise SystemExit("payload must be a JSON object")
-print(json.dumps(payload, ensure_ascii=True))
-PY
+$RPC_CMD agents.submitHostOperator "$PAYLOAD" | python3 -m json.tool

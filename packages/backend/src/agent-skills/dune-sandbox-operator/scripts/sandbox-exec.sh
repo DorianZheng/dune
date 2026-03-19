@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 API_SCRIPT="${SCRIPT_DIR}/sandbox-api.sh"
-BASE_URL="${SANDBOX_PROXY_URL:-http://localhost:3200}"
+BASE_URL="${DUNE_AGENT_URL:?DUNE_AGENT_URL env var not set}"
 
 usage() {
   cat >&2 <<'USAGE'
@@ -56,6 +56,7 @@ PY
     [[ $# -ge 2 ]] || usage
     curl -sS -N \
       -H 'Accept: text/event-stream' \
+      -H "X-Actor-Type: system" -H "X-Actor-Id: agent:${AGENT_ID}" \
       "${BASE_URL}/sandboxes/v1/boxes/$1/execs/$2/events"
     ;;
   *)

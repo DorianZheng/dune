@@ -3,7 +3,7 @@ import * as channelStore from '../storage/channel-store.js'
 import * as messageStore from '../storage/message-store.js'
 import * as agentManager from './agent-manager.js'
 import * as mailboxService from '../mailbox/mailbox-service.js'
-import { broadcastToChannel } from '../websocket/ws-server.js'
+import { sendToChannel as broadcastToChannel } from '../gateway/broadcast.js'
 import type { Message } from '@dune/shared'
 
 const MAX_CHAIN_DEPTH = 5

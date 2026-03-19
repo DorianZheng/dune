@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+RPC_CMD="${RPC_CMD:-python3 $DUNE_RPC_SCRIPT}"
+
 BATCH_ID="${1:-}"
 
 if [[ -z "${BATCH_ID}" ]]; then
@@ -8,7 +10,5 @@ if [[ -z "${BATCH_ID}" ]]; then
   exit 1
 fi
 
-curl -sS -X POST "http://localhost:3200/mailbox/ack" \
-  -H 'Content-Type: application/json' \
-  -d "{\"batchId\":\"${BATCH_ID}\"}"
+$RPC_CMD agents.ackMailbox "{\"id\":\"$AGENT_ID\",\"batchId\":\"$BATCH_ID\"}"
 echo

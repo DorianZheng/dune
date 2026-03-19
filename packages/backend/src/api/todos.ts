@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import * as todoStore from '../storage/todo-store.js'
 import * as todoTimer from '../todos/todo-timer.js'
 import { parseAndValidateDueAt } from '../todos/due-at.js'
-import { broadcastAll } from '../websocket/ws-server.js'
+import { sendToAll as broadcastAll } from '../gateway/broadcast.js'
 
 export const todosApi = new Hono()
 
