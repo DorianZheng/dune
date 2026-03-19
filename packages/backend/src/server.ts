@@ -12,6 +12,7 @@ import { sandboxesApi } from './api/sandboxes.js'
 import { todosApi } from './api/todos.js'
 import { settingsApi } from './api/settings.js'
 import { adminHostOperatorApi } from './api/admin-host-operator.js'
+import { startSlackConnection, stopSlackConnection } from './slack/slack-connection.js'
 import { setupAgentGateway, setupClientGateway } from './gateway/transport.js'
 import { reloadTimers } from './todos/todo-timer.js'
 import { stopAllAgents, closeRuntime } from './agents/agent-manager.js'
@@ -43,6 +44,19 @@ app.onError((err, c) => {
 })
 
 app.get('/health', (c) => c.json({ status: 'ok' }))
+
+// Block dangerous sandbox operations for agent actors (system actor type)
+app.use('/api/sandboxes/*', async (c, next) => {
+  const actorType = c.req.header('X-Actor-Type')
+  if (actorType === 'system') {
+    const path = c.req.path.replace('/api/sandboxes', '')
+    const method = c.req.method
+    if (method === 'POST' && /^\/v1\/boxes\/?$/.test(path)) return c.json({ error: 'forbidden' }, 403)
+    if (method === 'DELETE' && /^\/v1\/boxes\/[^/]+\/?$/.test(path)) return c.json({ error: 'forbidden' }, 403)
+    if (/import-host-path/.test(path)) return c.json({ error: 'forbidden' }, 403)
+  }
+  return next()
+})
 
 // REST routes (backward compat for sandbox scripts)
 app.route('/api/channels', channelsApi)
@@ -154,6 +168,7 @@ export async function startServer() {
 
   reloadTimers()
   startAgentLogRetentionSweepScheduler()
+  startSlackConnection().catch(err => console.warn('Slack auto-connect failed:', err))
 
   // Graceful shutdown
   const shutdown = async () => {
@@ -162,6 +177,7 @@ export async function startServer() {
     clientServer.close()
     adminServer.close()
     stopAgentLogRetentionSweepScheduler()
+    await stopSlackConnection()
     await stopAllSandboxes()
     await stopAllAgents()
     closeSandboxRuntime()

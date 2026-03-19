@@ -193,11 +193,14 @@ function validateInput(agent: Pick<Agent, 'hostOperatorApps' | 'hostOperatorPath
       if (input.action === 'url' && (!input.url || !input.url.trim())) throw new Error('url_required')
       return input
     }
-    case 'filesystem':
+    case 'filesystem': {
+      const VALID_FS_OPS = new Set(['list', 'read', 'write', 'delete', 'search'])
+      if (!VALID_FS_OPS.has(input.op)) throw new Error(`invalid_filesystem_op: ${input.op}. Valid: ${[...VALID_FS_OPS].join(', ')}`)
       if (input.op === 'search' && (!input.query || !input.query.trim())) throw new Error('query_required')
       if (input.op === 'write' && typeof input.content !== 'string') throw new Error('content_required')
       ensureAllowedHostPath(input.path, agent, { allowMissingLeaf: input.op === 'write', enforceAllowlist: enforce })
       return input
+    }
     default:
       throw new Error('invalid_host_operator_request')
   }

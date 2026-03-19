@@ -20,6 +20,9 @@ import { parseAndValidateDueAt } from '../todos/due-at.js'
 import { onNewMessage } from '../agents/orchestrator.js'
 import { parseMentions } from '../utils/mentions.js'
 import { config } from '../config.js'
+import * as slackSettingsStore from '../storage/slack-settings-store.js'
+import * as slackChannelLinkStore from '../storage/slack-channel-link-store.js'
+import * as slackConnection from '../slack/slack-connection.js'
 import {
   HostDirectoryPickerError,
   pickHostDirectory,
@@ -244,6 +247,7 @@ h('channels.sendMessage', async (params) => {
   const mentionedIds = parseMentions(content, agents)
   const message = messageStore.createMessage(channelId, authorId, content, mentionedIds)
   onNewMessage(message).catch(err => console.error('Orchestrator error:', err))
+  slackConnection.maybeForwardToSlack(message).catch(err => console.error('Slack forward error:', err))
   return message
 })
 
@@ -1133,4 +1137,74 @@ h('messages.get', async (params) => {
   const msg = messageStore.getMessage(params.id as string)
   if (!msg) throw new Error('not_found')
   return msg
+})
+
+// ── Slack ─────────────────────────────────────────────────────────────
+
+h('slack.getSettings', async () => {
+  return slackSettingsStore.getSlackSettingsSummary()
+})
+
+h('slack.updateSettings', async (params) => {
+  const data: { botToken?: string; appToken?: string } = {}
+  if (typeof params.botToken === 'string') data.botToken = params.botToken
+  if (typeof params.appToken === 'string') data.appToken = params.appToken
+  if (Object.keys(data).length > 0) {
+    slackSettingsStore.updateSlackCredentials(data)
+    await slackConnection.startSlackConnection()
+  }
+  return slackSettingsStore.getSlackSettingsSummary()
+})
+
+h('slack.disconnect', async () => {
+  await slackConnection.stopSlackConnection()
+  slackSettingsStore.clearSlackInstallation()
+  return { ok: true }
+})
+
+h('slack.listRemoteChannels', async () => {
+  const client = slackConnection.getSlackWebClient()
+  if (!client) throw new Error('Slack not connected')
+  const result = await client.conversations.list({ types: 'public_channel', limit: 200 })
+  return (result.channels || []).map((ch: any) => ({ id: ch.id, name: ch.name }))
+})
+
+h('slack.listLinks', async () => {
+  return slackChannelLinkStore.listLinks()
+})
+
+h('slack.createLink', async (params) => {
+  const duneChannelId = params.duneChannelId as string
+  const slackChannelId = params.slackChannelId as string
+  const slackChannelName = params.slackChannelName as string
+  const direction = (params.direction as string) || 'bidirectional'
+  if (!duneChannelId || !slackChannelId || !slackChannelName) {
+    throw new Error('duneChannelId, slackChannelId, and slackChannelName required')
+  }
+  return slackChannelLinkStore.createLink(duneChannelId, slackChannelId, slackChannelName, direction as any)
+})
+
+h('slack.deleteLink', async (params) => {
+  const ok = slackChannelLinkStore.deleteLink(params.id as string)
+  if (!ok) throw new Error('not_found')
+  return { ok: true }
+})
+
+h('slack.listChannels', async () => {
+  return slackChannelLinkStore.listLinks()
+})
+
+h('slack.send', async (params) => {
+  const client = slackConnection.getSlackWebClient()
+  if (!client) throw new Error('Slack not connected')
+  const slackChannelId = params.slackChannelId as string
+  const content = params.content as string
+  const agentName = params.agentName as string | undefined
+  if (!slackChannelId || !content) throw new Error('slackChannelId and content required')
+  await client.chat.postMessage({
+    channel: slackChannelId,
+    text: content,
+    username: agentName || 'Dune Agent',
+  })
+  return { ok: true }
 })

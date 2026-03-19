@@ -406,6 +406,28 @@ function initSchema(db: Database.Database) {
       claude_code_disable_nonessential_traffic TEXT,
       updated_at INTEGER NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS slack_settings (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      bot_token TEXT,
+      app_token TEXT,
+      team_id TEXT,
+      team_name TEXT,
+      bot_user_id TEXT,
+      installed_at INTEGER,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS slack_channel_links (
+      id TEXT PRIMARY KEY,
+      dune_channel_id TEXT NOT NULL,
+      slack_channel_id TEXT NOT NULL,
+      slack_channel_name TEXT NOT NULL,
+      direction TEXT NOT NULL DEFAULT 'bidirectional',
+      created_at INTEGER NOT NULL,
+      FOREIGN KEY (dune_channel_id) REFERENCES channels(id) ON DELETE CASCADE,
+      UNIQUE (dune_channel_id, slack_channel_id)
+    );
   `)
 
   // Migration: add description column to existing databases
@@ -545,4 +567,5 @@ function initSchema(db: Database.Database) {
   } catch {
     // Column already exists — ignore
   }
+
 }

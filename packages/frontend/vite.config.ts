@@ -3,19 +3,14 @@ import { readFileSync } from 'node:fs'
 
 type PortConfig = { agentPort: number; clientPort: number; adminPort: number }
 
-let cachedConfig: PortConfig | null = null
-
 function readPortConfig(): PortConfig {
-  if (cachedConfig) return cachedConfig
   try {
     const raw = readFileSync('../backend/.port', 'utf-8').trim()
     if (raw.startsWith('{')) {
-      cachedConfig = JSON.parse(raw)
-      return cachedConfig!
+      return JSON.parse(raw)
     }
     const port = parseInt(raw, 10)
-    cachedConfig = { agentPort: port, clientPort: port, adminPort: port + 1 }
-    return cachedConfig
+    return { agentPort: port, clientPort: port, adminPort: port + 1 }
   } catch {
     return { agentPort: 3100, clientPort: 3100, adminPort: 3101 }
   }

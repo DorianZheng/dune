@@ -12,6 +12,8 @@
     "@dune/shared": "workspace:*",
     "@hono/node-server": "^1.13.0",
     "@sinclair/typebox": "^0.34.0",
+    "@slack/socket-mode": "^2.0.6",
+    "@slack/web-api": "^7.15.0",
     "better-sqlite3": "^11.0.0",
     "hono": "^4.6.0",
     "mime-types": "^3.0.2",

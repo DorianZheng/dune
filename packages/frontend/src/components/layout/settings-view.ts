@@ -1,11 +1,12 @@
 import { LitElement, html, css, nothing } from 'lit'
 import { customElement, property, state } from 'lit/decorators.js'
-import type { ClaudeSettings, ClaudeSettingsUpdate, SelectedModelProvider } from '@dune/shared'
-import { getClaudeSettings, updateClaudeSettings } from '../../services/rpc.js'
+import type { ClaudeSettings, ClaudeSettingsUpdate, SelectedModelProvider, SlackSettings, SlackChannelLink, SlackChannel, Channel } from '@dune/shared'
+import { getClaudeSettings, updateClaudeSettings, getSlackSettings, updateSlackSettings, disconnectSlack, listSlackRemoteChannels, listSlackLinks, createSlackLink, deleteSlackLink, listChannels } from '../../services/rpc.js'
+
 import type { ThemeMode } from '../../state/ui-preferences.js'
 
 type TrafficMode = 'inherit' | 'enabled' | 'disabled'
-type SettingsSection = 'general' | 'model'
+type SettingsSection = 'general' | 'model' | 'integrations'
 
 @customElement('settings-view')
 export class SettingsView extends LitElement {
@@ -30,6 +31,19 @@ export class SettingsView extends LitElement {
   @state() private clearAnthropicApiKey = false
   @state() private clearClaudeCodeOAuthToken = false
   @state() private clearAnthropicAuthToken = false
+
+  // Slack
+  @state() private slackSettings: SlackSettings | null = null
+  @state() private slackLoading = false
+  @state() private slackBotTokenDraft = ''
+  @state() private slackAppTokenDraft = ''
+  @state() private slackLinks: SlackChannelLink[] = []
+  @state() private slackRemoteChannels: SlackChannel[] = []
+  @state() private duneChannels: Channel[] = []
+  @state() private slackLinkDuneChannelId = ''
+  @state() private slackLinkSlackChannelId = ''
+  @state() private slackStatusMessage = ''
+  @state() private slackStatusTone: 'idle' | 'success' | 'error' = 'idle'
 
   static styles = css`
     :host {
@@ -889,6 +903,17 @@ export class SettingsView extends LitElement {
               </svg>
               <span>Model</span>
             </button>
+            <button
+              class="nav-item ${this.activeSection === 'integrations' ? 'active' : ''}"
+              type="button"
+              aria-current=${this.activeSection === 'integrations' ? 'page' : 'false'}
+              @click=${() => this.setActiveSection('integrations')}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" stroke-linecap="round" stroke-linejoin="round"></path>
+              </svg>
+              <span>Integrations</span>
+            </button>
           </div>
         </aside>
 
@@ -898,9 +923,258 @@ export class SettingsView extends LitElement {
           </div>
           ${this.activeSection === 'general'
             ? this.renderGeneralSection()
-            : this.renderModelSection()}
+            : this.activeSection === 'model'
+              ? this.renderModelSection()
+              : this.renderIntegrationsSection()}
         </main>
       </div>
+    `
+  }
+
+  // ── Slack / Integrations ───────────────────────────────────────────
+
+  private async loadSlackSettings() {
+    this.slackLoading = true
+    try {
+      const [settings, links, duneChannels] = await Promise.all([
+        getSlackSettings(),
+        listSlackLinks(),
+        listChannels(),
+      ])
+      this.slackSettings = settings
+      this.slackLinks = links
+      this.duneChannels = duneChannels
+
+      if (settings.isConnected) {
+        try {
+          this.slackRemoteChannels = await listSlackRemoteChannels()
+        } catch {
+          this.slackRemoteChannels = []
+        }
+      }
+    } catch (err) {
+      this.slackStatusTone = 'error'
+      this.slackStatusMessage = err instanceof Error ? err.message : 'Failed to load Slack settings'
+    } finally {
+      this.slackLoading = false
+    }
+  }
+
+  private async saveSlackCredentials() {
+    const data: { botToken?: string; appToken?: string } = {}
+    if (this.slackBotTokenDraft.trim()) data.botToken = this.slackBotTokenDraft.trim()
+    if (this.slackAppTokenDraft.trim()) data.appToken = this.slackAppTokenDraft.trim()
+    if (!data.botToken && !data.appToken) return
+    try {
+      this.slackSettings = await updateSlackSettings(data)
+      this.slackBotTokenDraft = ''
+      this.slackAppTokenDraft = ''
+      this.slackStatusTone = 'success'
+      this.slackStatusMessage = 'Connected to Slack.'
+      await this.loadSlackSettings()
+    } catch (err) {
+      this.slackStatusTone = 'error'
+      this.slackStatusMessage = err instanceof Error ? err.message : 'Failed to connect'
+    }
+  }
+
+  private copySlackManifest() {
+    const manifest = JSON.stringify({
+      display_information: { name: 'Dune' },
+      features: {
+        app_home: { messages_tab_enabled: true, messages_tab_read_only_enabled: false },
+        bot_user: { display_name: 'Dune', always_online: true },
+      },
+      oauth_config: {
+        scopes: {
+          bot: ['channels:history', 'channels:read', 'chat:write', 'chat:write.customize', 'users:read', 'app_mentions:read', 'im:history'],
+        },
+      },
+      settings: {
+        event_subscriptions: { bot_events: ['app_mention', 'message.channels'] },
+        socket_mode_enabled: true,
+      },
+    }, null, 2)
+    navigator.clipboard.writeText(manifest)
+    this.slackStatusTone = 'success'
+    this.slackStatusMessage = 'Manifest copied to clipboard.'
+  }
+
+  private async handleDisconnectSlack() {
+    try {
+      await disconnectSlack()
+      this.slackSettings = { isConnected: false, teamId: null, teamName: null, botUserId: null, installedAt: null }
+      this.slackLinks = []
+      this.slackRemoteChannels = []
+      this.slackStatusTone = 'success'
+      this.slackStatusMessage = 'Slack disconnected.'
+    } catch (err) {
+      this.slackStatusTone = 'error'
+      this.slackStatusMessage = err instanceof Error ? err.message : 'Failed to disconnect'
+    }
+  }
+
+  private async handleCreateLink() {
+    if (!this.slackLinkDuneChannelId || !this.slackLinkSlackChannelId) return
+    const slackCh = this.slackRemoteChannels.find(c => c.id === this.slackLinkSlackChannelId)
+    try {
+      await createSlackLink({
+        duneChannelId: this.slackLinkDuneChannelId,
+        slackChannelId: this.slackLinkSlackChannelId,
+        slackChannelName: slackCh?.name || this.slackLinkSlackChannelId,
+      })
+      this.slackLinkDuneChannelId = ''
+      this.slackLinkSlackChannelId = ''
+      this.slackLinks = await listSlackLinks()
+    } catch (err) {
+      this.slackStatusTone = 'error'
+      this.slackStatusMessage = err instanceof Error ? err.message : 'Failed to create link'
+    }
+  }
+
+  private async handleDeleteLink(id: string) {
+    try {
+      await deleteSlackLink(id)
+      this.slackLinks = await listSlackLinks()
+    } catch (err) {
+      this.slackStatusTone = 'error'
+      this.slackStatusMessage = err instanceof Error ? err.message : 'Failed to delete link'
+    }
+  }
+
+  private renderIntegrationsSection() {
+    if (!this.slackSettings && !this.slackLoading) {
+      void this.loadSlackSettings()
+    }
+
+    const connected = this.slackSettings?.isConnected ?? false
+
+    return html`
+      <section class="section">
+        <h2 class="section-title">Slack</h2>
+        <div class="settings-card">
+          <div class="field">
+            <div class="field-top">
+              <div class="field-title">Connection</div>
+              <div class="field-status ${connected ? 'success' : ''}">${connected ? `Connected to ${this.slackSettings?.teamName || 'workspace'}` : 'Not connected'}</div>
+            </div>
+            <div class="field-help">Connect to a Slack workspace to bridge messages between Dune channels and Slack channels.</div>
+
+            ${!connected ? html`
+              <div class="field-help">
+                1. <a href="https://api.slack.com/apps" target="_blank" rel="noopener">Create a Slack app</a> (use
+                <button class="btn" type="button" style="display:inline;min-height:auto;padding:2px 6px;font-size:inherit;" @click=${() => this.copySlackManifest()}>Copy Manifest</button>
+                for quick setup)
+                <br>2. Install it to your workspace
+                <br>3. Paste the tokens below
+              </div>
+              <div class="field-grid">
+                <div class="field">
+                  <div class="field-top">
+                    <div class="field-title">Bot Token</div>
+                  </div>
+                  <div class="field-help">From: Install App → Bot User OAuth Token</div>
+                  <input class="text-input" type="password" placeholder="xoxb-..." autocomplete="off"
+                    .value=${this.slackBotTokenDraft}
+                    @input=${(e: Event) => { this.slackBotTokenDraft = (e.target as HTMLInputElement).value }}
+                  />
+                </div>
+                <div class="field">
+                  <div class="field-top">
+                    <div class="field-title">App Token (optional)</div>
+                  </div>
+                  <div class="field-help">Enables receiving Slack messages in Dune. From: Basic Information → App-Level Tokens</div>
+                  <input class="text-input" type="password" placeholder="xapp-..." autocomplete="off"
+                    .value=${this.slackAppTokenDraft}
+                    @input=${(e: Event) => { this.slackAppTokenDraft = (e.target as HTMLInputElement).value }}
+                  />
+                </div>
+              </div>
+              <div class="field-actions">
+                <button class="btn primary" type="button"
+                  .disabled=${!this.slackBotTokenDraft.trim()}
+                  @click=${() => void this.saveSlackCredentials()}
+                >Connect</button>
+              </div>
+            ` : html`
+              <div class="field-actions">
+                <button class="btn" type="button"
+                  @click=${() => void this.handleDisconnectSlack()}
+                >Disconnect</button>
+                <button class="btn" type="button"
+                  @click=${() => void this.loadSlackSettings()}
+                >Refresh</button>
+              </div>
+
+              ${!this.slackSettings?.hasAppToken ? html`
+                <div class="field">
+                  <div class="field-top">
+                    <div class="field-title">App Token (optional)</div>
+                  </div>
+                  <div class="field-help">Enables receiving Slack messages in Dune. From: Basic Information → App-Level Tokens</div>
+                  <input class="text-input" type="password" placeholder="xapp-..." autocomplete="off"
+                    .value=${this.slackAppTokenDraft}
+                    @input=${(e: Event) => { this.slackAppTokenDraft = (e.target as HTMLInputElement).value }}
+                  />
+                  <div class="field-actions">
+                    <button class="btn primary" type="button"
+                      .disabled=${!this.slackAppTokenDraft.trim()}
+                      @click=${() => void this.saveSlackCredentials()}
+                    >Save token</button>
+                  </div>
+                </div>
+              ` : nothing}
+            `}
+          </div>
+
+          ${connected ? html`
+            <div class="field">
+              <div class="field-title">Channel Links</div>
+              <div class="field-help">Link Dune channels to Slack channels for bidirectional messaging.</div>
+
+              ${this.slackLinks.length > 0 ? html`
+                ${this.slackLinks.map(link => html`
+                  <div class="row">
+                    <div class="row-copy">
+                      <div class="row-label">${this.duneChannels.find(c => c.id === link.duneChannelId)?.name || link.duneChannelId} ↔ #${link.slackChannelName}</div>
+                      <p class="row-sub">${link.direction}</p>
+                    </div>
+                    <button class="btn" type="button" @click=${() => void this.handleDeleteLink(link.id)}>Unlink</button>
+                  </div>
+                `)}
+              ` : nothing}
+
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                <select class="text-input" style="flex:1;min-width:120px;"
+                  .value=${this.slackLinkDuneChannelId}
+                  @change=${(e: Event) => { this.slackLinkDuneChannelId = (e.target as HTMLSelectElement).value }}
+                >
+                  <option value="">Dune channel...</option>
+                  ${this.duneChannels.map(ch => html`<option value=${ch.id}>${ch.name}</option>`)}
+                </select>
+                <select class="text-input" style="flex:1;min-width:120px;"
+                  .value=${this.slackLinkSlackChannelId}
+                  @change=${(e: Event) => { this.slackLinkSlackChannelId = (e.target as HTMLSelectElement).value }}
+                >
+                  <option value="">Slack channel...</option>
+                  ${this.slackRemoteChannels.map(ch => html`<option value=${ch.id}>#${ch.name}</option>`)}
+                </select>
+                <button class="btn primary" type="button"
+                  .disabled=${!this.slackLinkDuneChannelId || !this.slackLinkSlackChannelId}
+                  @click=${() => void this.handleCreateLink()}
+                >Link</button>
+              </div>
+            </div>
+          ` : nothing}
+
+          ${this.slackLoading ? html`<div class="feedback">Loading Slack settings...</div>` : nothing}
+          ${this.slackStatusMessage ? html`
+            <div class="feedback ${this.slackStatusTone === 'success' ? 'success' : ''} ${this.slackStatusTone === 'error' ? 'error' : ''}">
+              ${this.slackStatusMessage}
+            </div>
+          ` : nothing}
+        </div>
+      </section>
     `
   }
 }

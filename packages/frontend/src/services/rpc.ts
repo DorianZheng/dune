@@ -412,6 +412,19 @@ export const getClaudeSettings = () => call<ClaudeSettings>('settings.getClaude'
 export const updateClaudeSettings = (patch: ClaudeSettingsUpdate) =>
   call<ClaudeSettings>('settings.updateClaude', patch)
 
+// ── Slack ─────────────────────────────────────────────────────────────
+
+import type { SlackSettings, SlackChannelLink, SlackChannel } from '@dune/shared'
+
+export const getSlackSettings = () => call<SlackSettings>('slack.getSettings')
+export const updateSlackSettings = (data: { botToken?: string; appToken?: string }) => call<SlackSettings>('slack.updateSettings', data)
+export const disconnectSlack = () => call<{ ok: boolean }>('slack.disconnect')
+export const listSlackRemoteChannels = () => call<SlackChannel[]>('slack.listRemoteChannels')
+export const listSlackLinks = () => call<SlackChannelLink[]>('slack.listLinks')
+export const createSlackLink = (data: { duneChannelId: string; slackChannelId: string; slackChannelName: string; direction?: string }) =>
+  call<SlackChannelLink>('slack.createLink', data)
+export const deleteSlackLink = (id: string) => call<{ ok: boolean }>('slack.deleteLink', { id })
+
 // ── Sandboxes ─────────────────────────────────────────────────────────
 
 export const listBoxes = (_actor?: SandboxActorIdentity | null) =>
