@@ -26,6 +26,8 @@ Use the localhost host-operator proxy at `http://localhost:3200/host/v1/...`.
 scripts/host-status.sh
 scripts/host-overview.sh com.apple.Safari
 scripts/host-perceive.sh composite com.apple.Safari
+scripts/host-act.sh '{"action":"launch","bundleId":"com.google.Chrome"}'
+scripts/host-act.sh '{"action":"navigate","bundleId":"com.google.Chrome","url":"http://example.com"}'
 scripts/host-act.sh '{"action":"click","bundleId":"com.apple.Safari","point":{"x":320,"y":240}}'
 scripts/host-fs.sh '{"op":"read","path":"/Users/admin/Documents/note.txt"}'
 ```

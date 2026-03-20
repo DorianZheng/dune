@@ -10,22 +10,34 @@ MODE="$1"
 BUNDLE_ID="$2"
 QUERY="${3:-}"
 
-python3 - "$MODE" "$BUNDLE_ID" "$QUERY" <<'PY' | \
-  curl -sS -X POST "http://localhost:3200/host/v1/perceive" \
-    -H 'Content-Type: application/json' \
-    --data-binary @- \
-  | python3 -m json.tool
-import json
-import sys
-
-mode = sys.argv[1]
-bundle_id = sys.argv[2]
-query = sys.argv[3]
-payload = {
-  "mode": mode,
-  "bundleId": bundle_id,
-}
+# Build the request payload
+PAYLOAD=$(python3 -c '
+import json, sys
+mode, bundle_id, query = sys.argv[1], sys.argv[2], sys.argv[3]
+payload = {"mode": mode, "bundleId": bundle_id}
 if query:
-  payload["query"] = query
+    payload["query"] = query
 print(json.dumps(payload, ensure_ascii=True))
-PY
+' "$MODE" "$BUNDLE_ID" "$QUERY")
+
+# Send request and format the MCP content response
+curl -sS -X POST "http://localhost:3200/host/v1/perceive" \
+  -H 'Content-Type: application/json' \
+  -d "$PAYLOAD" \
+  | python3 -c '
+import json, sys
+r = json.load(sys.stdin)
+content = r.get("content", [])
+if r.get("isError"):
+    for item in content:
+        if item.get("type") == "text":
+            print(item["text"])
+    sys.exit(1)
+for item in content:
+    t = item.get("type", "")
+    if t == "text":
+        print(item.get("text", ""))
+    elif t == "image":
+        d = item.get("data", "")
+        print("[Image: %s, %d chars base64]" % (item.get("mimeType", "image/png"), len(d)))
+'

@@ -6,16 +6,29 @@ if [ "$#" -ne 1 ]; then
   exit 1
 fi
 
-python3 - "$1" <<'PY' | \
-  curl -sS -X POST "http://localhost:3200/host/v1/act" \
-    -H 'Content-Type: application/json' \
-    --data-binary @- \
-  | python3 -m json.tool
-import json
-import sys
-
+# Validate and forward the JSON payload
+PAYLOAD=$(python3 -c '
+import json, sys
 payload = json.loads(sys.argv[1])
 if not isinstance(payload, dict):
-  raise SystemExit("payload must be a JSON object")
+    raise SystemExit("payload must be a JSON object")
 print(json.dumps(payload, ensure_ascii=True))
-PY
+' "$1")
+
+# Send request and format the MCP content response
+curl -sS -X POST "http://localhost:3200/host/v1/act" \
+  -H 'Content-Type: application/json' \
+  -d "$PAYLOAD" \
+  | python3 -c '
+import json, sys
+r = json.load(sys.stdin)
+content = r.get("content", [])
+if r.get("isError"):
+    for item in content:
+        if item.get("type") == "text":
+            print(item["text"])
+    sys.exit(1)
+for item in content:
+    if item.get("type") == "text":
+        print(item.get("text", ""))
+'

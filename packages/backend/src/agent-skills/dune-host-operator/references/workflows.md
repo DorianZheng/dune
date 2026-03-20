@@ -19,6 +19,8 @@ Composite results may include artifact paths under `/config/.dune/system/host-op
 ## 3) Perform a host action
 
 ```bash
+scripts/host-act.sh '{"action":"launch","bundleId":"com.google.Chrome"}'
+scripts/host-act.sh '{"action":"navigate","bundleId":"com.google.Chrome","url":"http://example.com"}'
 scripts/host-act.sh '{"action":"focus","bundleId":"com.apple.Safari"}'
 scripts/host-act.sh '{"action":"click","bundleId":"com.apple.Safari","point":{"x":320,"y":240}}'
 scripts/host-act.sh '{"action":"type","bundleId":"com.apple.Safari","text":"hello world"}'

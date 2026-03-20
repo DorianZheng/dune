@@ -50,6 +50,7 @@ export const HostOperatorActAction = Type.Union([
   Type.Literal('clipboard_read'),
   Type.Literal('clipboard_write'),
   Type.Literal('url'),
+  Type.Literal('navigate'),
 ])
 
 export const HostOperatorFilesystemOp = Type.Union([

@@ -322,9 +322,9 @@ test('dune proxy forwards sandbox APIs with system actor headers and keeps exist
       }),
     })
     assert.equal(hostExecRes.status, 200)
-    const hostExecBody = await hostExecRes.json() as { status: string; kind: string }
-    assert.equal(hostExecBody.status, 'completed')
-    assert.equal(hostExecBody.kind, 'overview')
+    const hostExecBody = await hostExecRes.json() as { content: Array<{ type: string; text?: string }> }
+    assert.ok(Array.isArray(hostExecBody.content), 'response should have MCP content array')
+    assert.equal(hostExecBody.content[0]?.type, 'text')
 
     const longHostRequest = fetchStep('host-overview-long', `http://127.0.0.1:${proxyPort}/host/v1/overview`, {
       method: 'POST',

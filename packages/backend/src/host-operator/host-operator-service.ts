@@ -208,6 +208,7 @@ function validateInput(agent: Pick<Agent, 'hostOperatorApps' | 'hostOperatorPath
       }
       if (input.action === 'press' && (!input.key || !input.key.trim())) throw new Error('key_required')
       if (input.action === 'url' && (!input.url || !input.url.trim())) throw new Error('url_required')
+      if (input.action === 'navigate' && (!input.url || !input.url.trim())) throw new Error('url_required')
       return input
     }
     case 'filesystem':
@@ -268,6 +269,24 @@ async function executeRequest(request: HostOperatorRequest, agent: Agent): Promi
       break
     case 'perceive':
       result = await provider.perceive(request.input as HostOperatorPerceiveCreateRequest)
+      // Embed image artifacts inline as MCP-style content (matching rescreen format)
+      if (result.artifacts && result.artifacts.length > 0) {
+        const content: Array<Record<string, unknown>> = []
+        for (const artifact of result.artifacts) {
+          if (/\.(png|jpe?g|gif|webp)$/i.test(artifact.name)) {
+            const ext = artifact.name.split('.').pop()?.toLowerCase() ?? 'png'
+            const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : `image/${ext}`
+            content.push({ type: 'image', data: artifact.contentBase64, mimeType: mime })
+          }
+        }
+        const existing = result.resultJson as Record<string, unknown> | null
+        if (existing?.result) {
+          content.push({ type: 'text', text: typeof existing.result === 'string' ? existing.result : JSON.stringify(existing.result) })
+        }
+        if (content.length > 0) {
+          result.resultJson = { content }
+        }
+      }
       break
     case 'act':
       result = await provider.act(request.input as HostOperatorActCreateRequest)

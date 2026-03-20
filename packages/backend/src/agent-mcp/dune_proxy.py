@@ -81,6 +81,49 @@ def proxy_api_request(method, parsed, body_bytes, content_type, accept, api_path
         return (502, {"Content-Type": "application/json"}, payload)
 
 
+def _transform_host_operator_response(payload):
+    """Strip verbose HostOperatorRequest envelope, return lean MCP-style content."""
+    try:
+        envelope = json.loads(payload)
+    except (json.JSONDecodeError, ValueError):
+        return payload
+    if not isinstance(envelope, dict) or "resultJson" not in envelope:
+        return payload
+
+    req_status = envelope.get("status")
+    if req_status == "failed":
+        response = {
+            "content": [{"type": "text", "text": f"Error: {envelope.get('errorMessage', 'unknown')}"}],
+            "isError": True,
+        }
+    elif req_status == "rejected":
+        response = {
+            "content": [{"type": "text", "text": "Request rejected by admin"}],
+            "isError": True,
+        }
+    else:
+        rj = envelope.get("resultJson")
+        artifact_paths = envelope.get("artifactPaths", [])
+        # If resultJson already has MCP content format (e.g. from perceive with inline images), use it
+        if isinstance(rj, dict) and "content" in rj:
+            response = rj
+        elif rj is not None:
+            # Prefer "text" field if present (human-readable action result)
+            if isinstance(rj, dict) and "text" in rj:
+                text = rj["text"]
+            else:
+                text = json.dumps(rj) if not isinstance(rj, str) else rj
+            response = {"content": [{"type": "text", "text": text}]}
+        else:
+            response = {"content": [{"type": "text", "text": "ok"}]}
+        if artifact_paths:
+            response.setdefault("content", []).append(
+                {"type": "text", "text": "Artifacts: " + ", ".join(artifact_paths)}
+            )
+
+    return json.dumps(response).encode()
+
+
 def resolve_channel(name):
     """Resolve channel name → ID, with caching."""
     if name in _channel_cache:
@@ -247,12 +290,13 @@ class Handler(BaseHTTPRequestHandler):
                 api_path=f"/api/agents/{AGENT_ID}/host-operator",
             )
 
+            # Strip the verbose HostOperatorRequest envelope and return
+            # lean MCP-style content (matching rescreen format).
+            if status == 200 and payload:
+                payload = _transform_host_operator_response(payload)
+
             self.send_response(status)
-            passthrough_headers = ["Content-Type", "Cache-Control", "Connection"]
-            for key in passthrough_headers:
-                value = resp_headers.get(key) or resp_headers.get(key.lower())
-                if value:
-                    self.send_header(key, value)
+            self.send_header("Content-Type", "application/json")
             self.end_headers()
             if payload:
                 self.wfile.write(payload)
